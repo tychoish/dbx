@@ -29,7 +29,7 @@ test/unit: clean
 test/integration: clean
 	@mkdir -p tests/coverdata
 	@$(CONTAINER_RUNNER) compose --file=tests/compose.yaml up --detach
-	@go test -v -race -coverpkg=go-simpler.org/queries ./tests -args -test.gocoverdir=$$PWD/tests/coverdata
+	@go test -v -race -coverpkg=github.com/tychoish/dbx ./tests -args -test.gocoverdir=$$PWD/tests/coverdata
 	@$(CONTAINER_RUNNER) compose --file=tests/compose.yaml down
 	@go tool covdata textfmt -i=tests/coverdata -o=tests/coverage.out
 

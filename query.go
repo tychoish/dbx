@@ -1,4 +1,4 @@
-package queries
+package dbx
 
 import (
 	"context"
@@ -38,24 +38,25 @@ type Queryer interface {
 //
 // If the caller prefers the result to be a slice rather than an iterator, Query can be combined with [Collect].
 func Query[T any](ctx context.Context, q Queryer, query string, args ...any) iter.Seq2[T, error] {
+	var zero T
 	return func(yield func(T, error) bool) {
 		rows, err := q.QueryContext(ctx, query, args...)
 		if err != nil {
-			yield(zero[T](), err)
+			yield(zero, err)
 			return
 		}
 		defer rows.Close()
 
 		columns, err := rows.Columns()
 		if err != nil {
-			yield(zero[T](), err)
+			yield(zero, err)
 			return
 		}
 
 		for rows.Next() {
 			t, err := scan[T](rows, columns)
 			if err != nil {
-				yield(zero[T](), err)
+				yield(zero, err)
 				return
 			}
 			if !yield(t, nil) {
@@ -63,7 +64,7 @@ func Query[T any](ctx context.Context, q Queryer, query string, args ...any) ite
 			}
 		}
 		if err := rows.Err(); err != nil {
-			yield(zero[T](), err)
+			yield(zero, err)
 			return
 		}
 	}
@@ -104,21 +105,6 @@ func QueryRow[T any](ctx context.Context, q Queryer, query string, args ...any) 
 	return t, nil
 }
 
-// Collect is a [slices.Collect] variant that collects values from an iter.Seq2[T, error].
-// If an error occurs during the collection, Collect stops the iteration and returns the error.
-func Collect[T any](seq iter.Seq2[T, error]) ([]T, error) {
-	var ts []T
-	for t, err := range seq {
-		if err != nil {
-			return nil, err
-		}
-		ts = append(ts, t)
-	}
-	return ts, nil
-}
-
-func zero[T any]() (t T) { return t }
-
 type scanner interface {
 	Scan(...any) error
 }
@@ -130,9 +116,9 @@ var (
 	errUnsupportedT  = errors.New("queries: unsupported T")
 )
 
-func scan[T any](s scanner, columns []string) (T, error) {
+func scan[T any](s scanner, columns []string) (zero T, _ error) {
 	if len(columns) == 0 {
-		return zero[T](), errNoColumns
+		return zero, errNoColumns
 	}
 
 	var t T
@@ -142,7 +128,7 @@ func scan[T any](s scanner, columns []string) (T, error) {
 	switch {
 	case scannable(v):
 		if len(columns) > 1 {
-			return zero[T](), errNonStructT
+			return zero, errNonStructT
 		}
 		args[0] = v.Addr().Interface()
 	case v.Kind() == reflect.Struct:
@@ -150,16 +136,16 @@ func scan[T any](s scanner, columns []string) (T, error) {
 		for i, column := range columns {
 			idx, ok := indexes[column]
 			if !ok {
-				return zero[T](), fmt.Errorf("%w %q", errNoStructField, column)
+				return zero, fmt.Errorf("%w %q", errNoStructField, column)
 			}
 			args[i] = v.FieldByIndex(idx).Addr().Interface()
 		}
 	default:
-		return zero[T](), fmt.Errorf("%w %T", errUnsupportedT, t)
+		return zero, fmt.Errorf("%w %T", errUnsupportedT, t)
 	}
 
 	if err := s.Scan(args...); err != nil {
-		return zero[T](), err
+		return zero, err
 	}
 
 	return t, nil

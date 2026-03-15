@@ -1,5 +1,5 @@
-// Package queries implements convenience helpers for working with SQL queries.
-package queries
+// Package dbx implements convenience helpers for working with SQL queries.
+package dbx
 
 import (
 	"fmt"

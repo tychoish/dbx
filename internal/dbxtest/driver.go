@@ -1,5 +1,5 @@
 // Package queriestest implements utilities for testing SQL queries.
-package queriestest
+package dbxtest
 
 import (
 	"context"

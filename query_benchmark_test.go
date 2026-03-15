@@ -1,11 +1,11 @@
-package queries
+package dbx
 
 import (
 	"database/sql"
 	"database/sql/driver"
 	"testing"
 
-	"go-simpler.org/queries/queriestest"
+	queriestest "github.com/tychoish/dbx/internal/dbxtest"
 )
 
 func BenchmarkQuery_withScanner(b *testing.B) {

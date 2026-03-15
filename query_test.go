@@ -1,4 +1,4 @@
-package queries
+package dbx
 
 import (
 	"database/sql"
@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"go-simpler.org/queries/internal/assert"
-	. "go-simpler.org/queries/internal/assert/EF"
+	"github.com/tychoish/fun/assert"
+	"github.com/tychoish/fun/assert/check"
+	"github.com/tychoish/fun/erc"
 )
 
 func TestCollect(t *testing.T) {
@@ -27,9 +28,9 @@ func TestCollect(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := Collect(tt.seq)
-			assert.IsErr[F](t, err, tt.wantErr)
-			assert.Equal[E](t, got, tt.want)
+			got, err := erc.FromIteratorUntil(tt.seq)
+			assert.ErrorIs(t, err, tt.wantErr)
+			check.EqualItems(t, got, tt.want)
 		})
 	}
 }
@@ -37,22 +38,22 @@ func TestCollect(t *testing.T) {
 func Test_scan(t *testing.T) {
 	t.Run("no columns", func(t *testing.T) {
 		_, err := scan[int](nil, []string{})
-		assert.IsErr[E](t, err, errNoColumns)
+		check.ErrorIs(t, err, errNoColumns)
 	})
 
 	t.Run("non-struct T with len(columns) > 1", func(t *testing.T) {
 		_, err := scan[int](nil, []string{"foo", "bar"})
-		assert.IsErr[E](t, err, errNonStructT)
+		check.ErrorIs(t, err, errNonStructT)
 	})
 
 	t.Run("no struct field", func(t *testing.T) {
 		_, err := scan[struct{}](nil, []string{"foo", "bar"})
-		assert.IsErr[E](t, err, errNoStructField)
+		check.ErrorIs(t, err, errNoStructField)
 	})
 
 	t.Run("unsupported T", func(t *testing.T) {
 		_, err := scan[complex64](nil, []string{"foo", "bar"})
-		assert.IsErr[E](t, err, errUnsupportedT)
+		check.ErrorIs(t, err, errUnsupportedT)
 	})
 
 	t.Run("scan error", func(t *testing.T) {
@@ -63,7 +64,7 @@ func Test_scan(t *testing.T) {
 			Bar string `sql:"bar"`
 		}
 		_, err := scan[row](&s, []string{"foo", "bar"})
-		assert.IsErr[E](t, err, s.err)
+		check.ErrorIs(t, err, s.err)
 	})
 
 	t.Run("struct T", func(t *testing.T) {
@@ -81,13 +82,13 @@ func Test_scan(t *testing.T) {
 			unexported string
 		}
 		v, err := scan[row](&s, []string{"foo", "bar", "baz"})
-		assert.NoErr[F](t, err)
-		assert.Equal[E](t, v.Foo, 1)
-		assert.Equal[E](t, v.Bar, "test")
-		assert.Equal[E](t, v.Baz, true)
-		assert.Equal[E](t, v.EmptyTag, "")
-		assert.Equal[E](t, v.Untagged, "")
-		assert.Equal[E](t, v.unexported, "")
+		assert.NotError(t, err)
+		check.Equal(t, v.Foo, 1)
+		check.Equal(t, v.Bar, "test")
+		check.Equal(t, v.Baz, true)
+		check.Equal(t, v.EmptyTag, "")
+		check.Equal(t, v.Untagged, "")
+		check.Equal(t, v.unexported, "")
 	})
 
 	t.Run("non-struct T", func(t *testing.T) {
@@ -116,14 +117,14 @@ func Test_scan(t *testing.T) {
 		for _, tt := range tests {
 			s := mockScanner{values: []any{tt.value}}
 			v, err := tt.scan(&s)
-			assert.NoErr[F](t, err)
-			assert.Equal[E](t, v, tt.value)
+			assert.NotError(t, err)
+			check.Equal(t, v, tt.value)
 		}
 
 		s := mockScanner{values: []any{"test"}}
 		v, err := scan[sql.Null[string]](&s, columns)
-		assert.NoErr[F](t, err)
-		assert.Equal[E](t, v, sql.Null[string]{V: "test", Valid: true})
+		assert.NotError(t, err)
+		check.Equal(t, v, sql.Null[string]{V: "test", Valid: true})
 	})
 }
 
