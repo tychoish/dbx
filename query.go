@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"iter"
 	"reflect"
 	"sync"
@@ -38,36 +37,8 @@ type Queryer interface {
 //
 // If the caller prefers the result to be a slice rather than an iterator, Query can be combined with [Collect].
 func Query[T any](ctx context.Context, q Queryer, query string, args ...any) iter.Seq2[T, error] {
-	var zero T
-	return func(yield func(T, error) bool) {
-		rows, err := q.QueryContext(ctx, query, args...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer rows.Close()
-
-		columns, err := rows.Columns()
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-
-		for rows.Next() {
-			t, err := scan[T](rows, columns)
-			if err != nil {
-				yield(zero, err)
-				return
-			}
-			if !yield(t, nil) {
-				return
-			}
-		}
-		if err := rows.Err(); err != nil {
-			yield(zero, err)
-			return
-		}
-	}
+	var cc cursor[T]
+	return cc.findMany(ctx, q, query, args)
 }
 
 // QueryRow is a [Query] variant for queries that are expected to return at most one row,
@@ -76,33 +47,8 @@ func Query[T any](ctx context.Context, q Queryer, query string, args ...any) ite
 // otherwise it scans the first row and discards the rest.
 // See the [Query] documentation for details on supported Ts.
 func QueryRow[T any](ctx context.Context, q Queryer, query string, args ...any) (T, error) {
-	rows, err := q.QueryContext(ctx, query, args...)
-	if err != nil {
-		return zero[T](), err
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return zero[T](), err
-	}
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return zero[T](), err
-		}
-		return zero[T](), sql.ErrNoRows
-	}
-
-	t, err := scan[T](rows, columns)
-	if err != nil {
-		return zero[T](), err
-	}
-	if err := rows.Err(); err != nil {
-		return zero[T](), err
-	}
-
-	return t, nil
+	var cc cursor[T]
+	return cc.findOne(ctx, q, query, args)
 }
 
 type scanner interface {
@@ -116,39 +62,9 @@ var (
 	errUnsupportedT  = errors.New("queries: unsupported T")
 )
 
-func scan[T any](s scanner, columns []string) (zero T, _ error) {
-	if len(columns) == 0 {
-		return zero, errNoColumns
-	}
-
-	var t T
-	v := reflect.ValueOf(&t).Elem()
-	args := make([]any, len(columns))
-
-	switch {
-	case scannable(v):
-		if len(columns) > 1 {
-			return zero, errNonStructT
-		}
-		args[0] = v.Addr().Interface()
-	case v.Kind() == reflect.Struct:
-		indexes := parseStruct(v.Type())
-		for i, column := range columns {
-			idx, ok := indexes[column]
-			if !ok {
-				return zero, fmt.Errorf("%w %q", errNoStructField, column)
-			}
-			args[i] = v.FieldByIndex(idx).Addr().Interface()
-		}
-	default:
-		return zero, fmt.Errorf("%w %T", errUnsupportedT, t)
-	}
-
-	if err := s.Scan(args...); err != nil {
-		return zero, err
-	}
-
-	return t, nil
+func scan[T any](s scanner, columns []string) (T, error) {
+	var cc cursor[T]
+	return cc.scan(s, columns)
 }
 
 func scannable(v reflect.Value) bool {
