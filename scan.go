@@ -2,7 +2,6 @@ package dbx
 
 import (
 	"database/sql"
-	"fmt"
 	"iter"
 	"reflect"
 	"time"
@@ -11,6 +10,11 @@ import (
 	"github.com/tychoish/fun/ers"
 	"github.com/tychoish/fun/irt"
 )
+
+func scan[T any](s scanner, columns []string) (T, error) {
+	var cc cursor[T]
+	return cc.scan(s, columns)
+}
 
 type scanner interface {
 	Scan(...any) error
@@ -23,21 +27,13 @@ const (
 	errUnsupportedT  ers.Error = "queries: unsupported T"
 )
 
-func scan[T any](s scanner, columns []string) (T, error) {
-	var cc cursor[T]
-	return cc.scan(s, columns)
-}
-
 var (
 	reflectTypeTime    = reflect.TypeFor[time.Time]()
 	reflectTypeScanner = reflect.TypeFor[sql.Scanner]()
 	reflectTypeString  = reflect.TypeFor[string]()
 )
 
-var (
-	useCache = true
-	cache    = &adt.SyncMap[reflect.Type, map[string][]int]{}
-)
+var cache = &adt.SyncMap[reflect.Type, map[string][]int]{}
 
 // rowPlan carries the per-row scan targets and an optional post-scan step.
 // resolve returns nil on error; postScan may be nil when no post-processing is needed.
@@ -50,147 +46,77 @@ type rowPlan struct {
 // It is computed once on the first scan() call — including the columns for that
 // query — and reused for all subsequent rows, since every row has the same columns.
 type scanPlan[T any] struct {
-	resolve func(t *T) (*rowPlan, error)
+	resolve func(t *T) *rowPlan
 }
 
 // wrapReflectMapping adapts a reflect.Value-based mapping function to the *T
 // signature required by scanPlan[T].
-func wrapReflectMapping[T any](inner func(reflect.Value) (*rowPlan, error)) func(*T) (*rowPlan, error) {
-	return func(t *T) (*rowPlan, error) {
+func wrapReflectMapping[T any](inner func(reflect.Value) *rowPlan) func(*T) *rowPlan {
+	return func(t *T) *rowPlan {
 		return inner(reflect.ValueOf(t).Elem())
 	}
 }
 
-func buildPlan[T any](columns []string) (*scanPlan[T], error) {
-	typ := reflect.TypeFor[T]()
-	k := typ.Kind()
-
-	switch {
-	case isScannableType(typ, k):
-		if len(columns) != 1 {
-			var zero T
-			return nil, fmt.Errorf("%w %T", errNonStructT, zero)
-		}
-		return &scanPlan[T]{resolve: mappingDirect[T]}, nil
-	case k == reflect.Struct:
-		return buildStructPlan[T](typ, columns)
-	case typ.Implements(reflectTypeScanner):
-		if len(columns) != 1 {
-			return nil, fmt.Errorf("%w %T", errNonStructT, *new(T))
-		}
-		return &scanPlan[T]{resolve: mappingImplements[T]}, nil
-	case k == reflect.Slice && isSliceOfAny(typ):
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingSliceOfAny(columns))}, nil
-	case k == reflect.Map && isStringToAnyMap(typ):
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingMapStringAny(columns))}, nil
-	case k == reflect.Slice && isKVStringAnySlice(typ):
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingKVStringAny(columns))}, nil
-	case k == reflect.Func && isSeq2StringAny(typ):
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingSeq2StringAny(columns))}, nil
-	}
-
-	if elemType, ok := scannableSliceElem(typ, k); ok {
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingTypedSlice(typ, elemType, columns))}, nil
-	}
-	if elemType, ok := scannableStringMapElem(typ, k); ok {
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingTypedStringMap(typ, elemType, columns))}, nil
-	}
-	if valType, ok := scannableKVStringSliceElem(typ, k); ok {
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingTypedKVSlice(typ, valType, columns))}, nil
-	}
-	if valType, ok := seq2StringScannableValueType(typ, k); ok {
-		return &scanPlan[T]{resolve: wrapReflectMapping[T](mappingTypedSeq2(typ, valType, columns))}, nil
-	}
-
-	return nil, fmt.Errorf("%w %T", errUnsupportedT, typ)
-}
-
-// buildStructPlan resolves the column→field-index mapping for struct type typ and
-// returns a scanPlan[T] that scans rows directly into struct fields.
-// Embedded struct fields are supported via multi-element index paths from reflect.VisibleFields.
-func buildStructPlan[T any](typ reflect.Type, columns []string) (*scanPlan[T], error) {
-	m := parseStruct(typ)
-	indices := make([][]int, len(columns))
-	for i, col := range columns {
-		idx, ok := m[col]
-		if !ok {
-			return nil, fmt.Errorf("%w %q", errNoStructField, col)
-		}
-		indices[i] = idx
-	}
-	args := make([]any, len(indices))
-	return &scanPlan[T]{resolve: wrapReflectMapping[T](func(v reflect.Value) (*rowPlan, error) {
-		for i, idx := range indices {
-			args[i] = v.FieldByIndex(idx).Addr().Interface()
-		}
-		return &rowPlan{args: args}, nil
-	})}, nil
-}
-
-func mappingDirect[T any](t *T) (*rowPlan, error) {
-	return &rowPlan{args: []any{t}}, nil
-}
-
-func mappingImplements[T any](t *T) (*rowPlan, error) {
-	return &rowPlan{args: []any{any(*t)}}, nil
+func mappingDirect[T any](t *T) *rowPlan {
+	return &rowPlan{args: []any{t}}
 }
 
 // mappingSliceOfAny allocates fresh scan targets per row; the result slice shares
 // the backing array so it cannot be pre-allocated without aliasing the caller's value.
-func mappingSliceOfAny(columns []string) func(reflect.Value) (*rowPlan, error) {
-	return func(v reflect.Value) (*rowPlan, error) {
+func mappingSliceOfAny(columns []string) func(reflect.Value) *rowPlan {
+	return func(v reflect.Value) *rowPlan {
 		vals := make([]any, len(columns))
 		args := make([]any, len(columns))
 		for i := range vals {
 			args[i] = &vals[i]
 		}
 		v.Set(reflect.ValueOf(vals))
-		return &rowPlan{args: args}, nil
+		return &rowPlan{args: args}
 	}
 }
 
 // mappingMapStringAny pre-allocates scan targets; vals are copied into a fresh map
 // in postScan so reuse across rows is safe.
-func mappingMapStringAny(columns []string) func(reflect.Value) (*rowPlan, error) {
+func mappingMapStringAny(columns []string) func(reflect.Value) *rowPlan {
 	vals := make([]any, len(columns))
 	args := make([]any, len(columns))
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return func(v reflect.Value) (*rowPlan, error) {
+	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := make(map[string]any, len(columns))
 			for i, name := range columns {
 				target[name] = vals[i]
 			}
 			v.Set(reflect.ValueOf(target))
-		}}, nil
+		}}
 	}
 }
 
 // mappingKVStringAny pre-allocates scan targets; vals are copied into a fresh slice
 // in postScan so reuse across rows is safe.
-func mappingKVStringAny(columns []string) func(reflect.Value) (*rowPlan, error) {
+func mappingKVStringAny(columns []string) func(reflect.Value) *rowPlan {
 	vals := make([]any, len(columns))
 	args := make([]any, len(columns))
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return func(v reflect.Value) (*rowPlan, error) {
+	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := make([]irt.KV[string, any], len(columns))
 			for i, name := range columns {
 				target[i] = irt.MakeKV(name, vals[i])
 			}
 			v.Set(reflect.ValueOf(target))
-		}}, nil
+		}}
 	}
 }
 
 // mappingSeq2StringAny allocates fresh scan targets per row because the returned
 // iterator is lazy and may be consumed after the next row is scanned.
-func mappingSeq2StringAny(columns []string) func(reflect.Value) (*rowPlan, error) {
-	return func(v reflect.Value) (*rowPlan, error) {
+func mappingSeq2StringAny(columns []string) func(reflect.Value) *rowPlan {
+	return func(v reflect.Value) *rowPlan {
 		vals := make([]any, len(columns))
 		args := make([]any, len(columns))
 		for i := range vals {
@@ -198,60 +124,64 @@ func mappingSeq2StringAny(columns []string) func(reflect.Value) (*rowPlan, error
 		}
 		return &rowPlan{args: args, postScan: func() {
 			v.Set(reflect.ValueOf(irt.Zip(irt.Slice(columns), irt.Slice(vals))))
-		}}, nil
+		}}
 	}
 }
 
 // mappingTypedSlice pre-allocates typed scan pointers; values are copied into a
 // fresh slice in postScan so reuse across rows is safe.
-func mappingTypedSlice(typ, elemType reflect.Type, columns []string) func(reflect.Value) (*rowPlan, error) {
+func mappingTypedSlice(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+	elemType := typ.Elem()
 	ptrs := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
 	for i := range ptrs {
 		ptrs[i] = reflect.New(elemType)
 		args[i] = ptrs[i].Interface()
 	}
-	return func(v reflect.Value) (*rowPlan, error) {
+	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := reflect.MakeSlice(typ, len(ptrs), len(ptrs))
 			for i := range ptrs {
 				target.Index(i).Set(ptrs[i].Elem())
 			}
 			v.Set(target)
-		}}, nil
+		}}
 	}
 }
 
 // mappingTypedStringMap pre-allocates typed scan pointers; values are copied into a
 // fresh map in postScan so reuse across rows is safe.
-func mappingTypedStringMap(typ, elemType reflect.Type, columns []string) func(reflect.Value) (*rowPlan, error) {
+func mappingTypedStringMap(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+	elemType := typ.Elem()
 	ptrs := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
 	for i := range ptrs {
 		ptrs[i] = reflect.New(elemType)
 		args[i] = ptrs[i].Interface()
 	}
-	return func(v reflect.Value) (*rowPlan, error) {
+	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := reflect.MakeMap(typ)
 			for i, name := range columns {
 				target.SetMapIndex(reflect.ValueOf(name), ptrs[i].Elem())
 			}
 			v.Set(target)
-		}}, nil
+		}}
 	}
 }
 
 // mappingTypedKVSlice pre-allocates typed scan pointers; values are copied into a
 // fresh KV slice in postScan so reuse across rows is safe.
-func mappingTypedKVSlice(typ, valType reflect.Type, columns []string) func(reflect.Value) (*rowPlan, error) {
+// The value type V is derived from the KV[string, V].Value field of typ's element.
+func mappingTypedKVSlice(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+	valType := typ.Elem().Field(1).Type // irt.KV[K,V].Value
 	ptrs := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
 	for i := range ptrs {
 		ptrs[i] = reflect.New(valType)
 		args[i] = ptrs[i].Interface()
 	}
-	return func(v reflect.Value) (*rowPlan, error) {
+	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := reflect.MakeSlice(typ, len(columns), len(columns))
 			for i, name := range columns {
@@ -260,14 +190,16 @@ func mappingTypedKVSlice(typ, valType reflect.Type, columns []string) func(refle
 				kv.Field(1).Set(ptrs[i].Elem())
 			}
 			v.Set(target)
-		}}, nil
+		}}
 	}
 }
 
 // mappingTypedSeq2 allocates fresh typed scan pointers per row because the returned
 // iterator is lazy and captures the pointers directly.
-func mappingTypedSeq2(typ, valType reflect.Type, columns []string) func(reflect.Value) (*rowPlan, error) {
-	return func(v reflect.Value) (*rowPlan, error) {
+// The value type V is derived from the yield function's second parameter.
+func mappingTypedSeq2(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+	valType := typ.In(0).In(1) // Seq2[K,V] = func(func(K,V) bool); yield.In(1) = V
+	return func(v reflect.Value) *rowPlan {
 		ptrs := make([]reflect.Value, len(columns))
 		args := make([]any, len(columns))
 		for i := range ptrs {
@@ -288,7 +220,7 @@ func mappingTypedSeq2(typ, valType reflect.Type, columns []string) func(reflect.
 				}
 				return nil
 			}))
-		}}, nil
+		}}
 	}
 }
 
@@ -311,80 +243,70 @@ func isScannableType(t reflect.Type, k reflect.Kind) bool {
 		reflect.PointerTo(t).Implements(reflectTypeScanner)
 }
 
-// scannableStringMapElem checks whether t is a map[string]V where V is directly
-// scannable. Returns the element type and true if so.
-func scannableStringMapElem(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+// scannableStringMapElem reports whether t is a map[string]V where V is directly scannable.
+func scannableStringMapElem(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Map || t.Key() != reflectTypeString {
-		return nil, false
+		return false
 	}
 	elem := t.Elem()
-	return elem, isScannableType(elem, elem.Kind())
+	return isScannableType(elem, elem.Kind())
 }
 
-func scannableSliceElem(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+// scannableSliceElem reports whether t is []V where V is directly scannable.
+func scannableSliceElem(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Slice {
-		return nil, false
+		return false
 	}
 	elem := t.Elem()
-	return elem, isScannableType(elem, elem.Kind())
+	return isScannableType(elem, elem.Kind())
 }
 
-// scannableKVStringSliceElem checks whether t is []irt.KV[string, V] where V is
-// directly scannable (non-interface). Returns the value element type and true if so.
+// scannableKVStringSliceElem reports whether t is []irt.KV[string, V] where V is
+// directly scannable (non-interface).
 // The []irt.KV[string, any] case is handled separately by isKVStringAnySlice.
-func scannableKVStringSliceElem(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+func scannableKVStringSliceElem(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Slice {
-		return nil, false
+		return false
 	}
 	elem := t.Elem()
 	if elem.Kind() != reflect.Struct || elem.NumField() != 2 {
-		return nil, false
+		return false
 	}
 	keyField := elem.Field(0)
 	valField := elem.Field(1)
 	if keyField.Name != "Key" || keyField.Type != reflectTypeString {
-		return nil, false
+		return false
 	}
 	if valField.Name != "Value" {
-		return nil, false
+		return false
 	}
 	valType := valField.Type
-	return valType, isScannableType(valType, valType.Kind())
+	return isScannableType(valType, valType.Kind())
 }
 
-// seq2StringScannableValueType checks whether t is iter.Seq2[string, V] where V is
-// directly scannable (non-interface). Returns the value type V and true if so.
+// seq2StringScannableValueType reports whether t is iter.Seq2[string, V] where V is
+// directly scannable (non-interface).
 // The iter.Seq2[string, any] case is handled separately by isSeq2StringAny.
-func seq2StringScannableValueType(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+func seq2StringScannableValueType(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Func || t.NumIn() != 1 || t.NumOut() != 0 {
-		return nil, false
+		return false
 	}
 	yield := t.In(0)
 	if yield.Kind() != reflect.Func || yield.NumIn() != 2 || yield.NumOut() != 1 {
-		return nil, false
+		return false
 	}
 	if yield.In(0) != reflectTypeString || yield.Out(0).Kind() != reflect.Bool {
-		return nil, false
+		return false
 	}
 	valType := yield.In(1)
-	return valType, isScannableType(valType, valType.Kind())
+	return isScannableType(valType, valType.Kind())
 }
 
-// parseStruct parses the given struct type and returns a map of column names to field indexes.
-// The result is cached, so each struct type is parsed only once.
-func parseStruct(t reflect.Type) map[string][]int {
-	var indexes map[string][]int
-
-	if useCache {
-		if m, ok := cache.Load(t); ok {
-			return m
-		}
-		defer func() { cache.Store(t, indexes) }()
-	}
-
+// parseStructFields parses the struct type t and returns a map of column tag names to
+// field index paths. Embedded struct fields are included via reflect.VisibleFields.
+func parseStructFields(t reflect.Type) map[string][]int {
 	fields := reflect.VisibleFields(t)
-	indexes = make(map[string][]int, len(fields))
-
+	indexes := make(map[string][]int, len(fields))
 	for _, field := range fields {
 		if !field.IsExported() {
 			continue
@@ -395,6 +317,15 @@ func parseStruct(t reflect.Type) map[string][]int {
 			indexes[column] = field.Index
 		}
 	}
-
 	return indexes
+}
+
+// parseStruct is like parseStructFields but caches results in the global cache.
+func parseStruct(t reflect.Type) map[string][]int {
+	if m, ok := cache.Load(t); ok {
+		return m
+	}
+	m := parseStructFields(t)
+	cache.Store(t, m)
+	return m
 }
