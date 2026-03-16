@@ -78,7 +78,7 @@ func TestBuilder_badQuery(t *testing.T) {
 		"too many arguments": {
 			format: "SELECT %s FROM tbl",
 			args:   []any{"foo", "bar"},
-			query:  "SELECT foo FROM tbl%!(EXTRA queries.formatter=bar)",
+			query:  "SELECT foo FROM tbl%!(EXTRA dbx.formatter=bar)",
 		},
 		"unexpected placeholder": {
 			format: "SELECT * FROM tbl WHERE foo = %? AND bar = %$",

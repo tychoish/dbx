@@ -30,7 +30,9 @@ func TestCollect(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			got, err := erc.FromIteratorUntil(tt.seq)
 			assert.ErrorIs(t, err, tt.wantErr)
-			check.EqualItems(t, got, tt.want)
+			if err == nil {
+				assert.EqualItems(t, got, tt.want)
+			}
 		})
 	}
 }

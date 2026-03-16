@@ -75,33 +75,53 @@ func (c cursor[T]) findOne(ctx context.Context, q Queryer, query string, args []
 	return t, nil
 }
 
-func (cursor[T]) scan(s scanner, columns []string) (zero T, _ error) {
+func (cursor[T]) resolveReflection(t *T) (reflect.Value, reflect.Kind) {
+	value := reflect.ValueOf(t).Elem()
+	kind := value.Kind()
+	return value, kind
+}
+
+func (c cursor[T]) scan(s scanner, columns []string) (zero T, err error) {
 	if len(columns) == 0 {
 		return zero, errNoColumns
 	}
 
 	var t T
-	v := reflect.ValueOf(&t).Elem()
-	args := make([]any, len(columns))
+	var args []any
 
-	switch {
-	case scannable(v):
+	if v, k := c.resolveReflection(&t); isScannable(v, k) {
 		if len(columns) > 1 {
 			return zero, errNonStructT
 		}
-		args[0] = v.Addr().Interface()
-	case v.Kind() == reflect.Struct:
-		v.Kind()
-		indexes := parseStruct(v.Type())
-		for i, column := range columns {
-			idx, ok := indexes[column]
-			if !ok {
-				return zero, fmt.Errorf("%w %q", errNoStructField, column)
-			}
-			args[i] = v.FieldByIndex(idx).Addr().Interface()
+		args = []any{v.Addr().Interface()}
+	} else if t := v.Type(); isCached(t) {
+		args, err = resolveMapping(v, columns, getCachedMapping(t))
+	} else if v.Type().Implements(reflectTypeScanner) {
+		// TODO create implementation; may need to change scanner to make this possible
+		panic("not implemented (yet)")
+	} else if k == reflect.Struct {
+		args, err = resolveMapping(v, columns, parseStruct(t))
+	} else if k == reflect.Slice && isSliceOfAny(t) {
+		args = make([]any, len(columns))
+		v.Addr().Set(reflect.ValueOf(args))
+	} else if k == reflect.Map && isStringToAnyMap(t) {
+		// TODO determine if it's possible to support other kinds of maps (with any kind of
+		//      theoretically scannable value, not just the trivally scanable ones)
+
+		// TODO write tests to ensure that this handle interior pointers correctly.
+		args = make([]any, len(columns))
+		target := make(map[string]any, len(columns))
+		for idx, name := range columns {
+			target[name] = args[idx]
 		}
-	default:
-		return zero, fmt.Errorf("%w %T", errUnsupportedT, t)
+		args = make([]any, len(columns))
+		v.Addr().Set(reflect.ValueOf(target))
+	} else {
+		err = fmt.Errorf("%w %T", errUnsupportedT, t)
+	}
+
+	if err != nil {
+		return zero, err
 	}
 
 	if err := s.Scan(args...); err != nil {

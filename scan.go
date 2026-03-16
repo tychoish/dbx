@@ -2,21 +2,23 @@ package dbx
 
 import (
 	"database/sql"
-	"errors"
+	"fmt"
 	"reflect"
-	"sync"
 	"time"
+
+	"github.com/tychoish/fun/adt"
+	"github.com/tychoish/fun/ers"
 )
 
 type scanner interface {
 	Scan(...any) error
 }
 
-var (
-	errNoColumns     = errors.New("queries: no columns in the query")
-	errNonStructT    = errors.New("queries: T must be a struct if len(columns) > 1")
-	errNoStructField = errors.New("queries: no struct field for the column")
-	errUnsupportedT  = errors.New("queries: unsupported T")
+const (
+	errNoColumns     ers.Error = "queries: no columns in the query"
+	errNonStructT    ers.Error = "queries: T must be a struct if len(columns) > 1"
+	errNoStructField ers.Error = "queries: no struct field for the column"
+	errUnsupportedT  ers.Error = "queries: unsupported T"
 )
 
 func scan[T any](s scanner, columns []string) (T, error) {
@@ -24,54 +26,75 @@ func scan[T any](s scanner, columns []string) (T, error) {
 	return cc.scan(s, columns)
 }
 
-func scannable(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.Bool,
-		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64,
-		reflect.String:
+var (
+	reflectTypeTime    = reflect.TypeFor[time.Time]()
+	reflectTypeScanner = reflect.TypeFor[sql.Scanner]()
+)
+
+func isScannable(v reflect.Value, kind reflect.Kind) bool {
+	switch {
+	case kind >= reflect.Bool && kind <= reflect.Float64:
 		return true
-	}
-	if v.Type() == reflect.TypeFor[time.Time]() {
+	case kind == reflect.String:
 		return true
-	}
-	if v.Addr().Type().Implements(reflect.TypeFor[sql.Scanner]()) {
+	case v.Type() == reflectTypeTime:
 		return true
+	case v.Addr().Type().Implements(reflectTypeScanner):
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 var (
 	useCache = true
-	cache    sync.Map // map[reflect.Type]map[string]int
+	cache    = &adt.SyncMap[reflect.Type, map[string][]int]{} // map[reflect.Type]
 )
+
+func isCached(t reflect.Type) bool                     { return useCache && cache.Check(t) }
+func getCachedMapping(t reflect.Type) map[string][]int { return cache.Get(t) }
+
+func isSliceOfAny(v any) bool     { _, ok := v.([]any); return ok }
+func isStringToAnyMap(v any) bool { _, ok := v.(map[string]any); return ok }
 
 // parseStruct parses the given struct type and returns a map of column names to field indexes.
 // The result is cached, so each struct type is parsed only once.
 func parseStruct(t reflect.Type) map[string][]int {
+	var indexes map[string][]int
+
 	if useCache {
 		if m, ok := cache.Load(t); ok {
-			return m.(map[string][]int)
+			return m
 		}
+		defer func() { cache.Store(t, indexes) }()
 	}
 
 	fields := reflect.VisibleFields(t)
-	indexes := make(map[string][]int, len(fields))
+	indexes = make(map[string][]int, len(fields))
 
 	for _, field := range fields {
 		if !field.IsExported() {
 			continue
 		}
-		column, ok := field.Tag.Lookup("sql")
-		if !ok || column == "" {
-			continue
+		if column, ok := field.Tag.Lookup("sql"); ok && column != "" {
+			indexes[column] = field.Index
+		} else if column, ok = field.Tag.Lookup("db"); ok && column != "" {
+			indexes[column] = field.Index
 		}
-		indexes[column] = field.Index
 	}
 
-	if useCache {
-		cache.Store(t, indexes)
-	}
 	return indexes
+}
+
+func resolveMapping(v reflect.Value, columns []string, mapping map[string][]int) ([]any, error) {
+	args := make([]any, len(columns))
+	for i, column := range columns {
+		idx, ok := mapping[column]
+		if !ok {
+			return nil, fmt.Errorf("%w %q", errNoStructField, column)
+		}
+		args[i] = v.FieldByIndex(idx).Addr().Interface()
+	}
+
+	return args, nil
 }
