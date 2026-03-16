@@ -140,27 +140,28 @@ func (c cursor[T]) buildPtrMapping(typ reflect.Type, columns []string) (*rowPlan
 	if err != nil {
 		return nil, err
 	}
-	rp := &rowPlan{}
-	rp.build = func(outerV reflect.Value) *rowPlan {
-		newElem := reflect.New(elem).Elem()
-		var inner *rowPlan
-		if innerRP.build != nil {
-			inner = innerRP.build(newElem)
-		} else {
-			inner = innerRP
-		}
-		orig := inner.postScan
-		return &rowPlan{
-			args: inner.args,
-			postScan: func(v reflect.Value) {
-				if orig != nil {
-					orig(newElem)
-				}
-				v.Set(newElem.Addr())
-			},
-		}
-	}
-	return rp, nil
+
+	return &rowPlan{
+		build: func(outerV reflect.Value) *rowPlan {
+			newElem := reflect.New(elem).Elem()
+			var inner *rowPlan
+			if innerRP.build != nil {
+				inner = innerRP.build(newElem)
+			} else {
+				inner = innerRP
+			}
+			orig := inner.postScan
+			return &rowPlan{
+				args: inner.args,
+				postScan: func(v reflect.Value) {
+					if orig != nil {
+						orig(newElem)
+					}
+					v.Set(newElem.Addr())
+				},
+			}
+		},
+	}, nil
 }
 
 // buildStructMapping resolves column→field-index paths for a struct type and returns
@@ -195,17 +196,17 @@ func (c cursor[T]) buildStructMapping(typ reflect.Type, columns []string) (*rowP
 // mappingSliceOfAny allocates fresh scan targets per row; the result slice shares
 // the backing array so it cannot be pre-allocated without aliasing the caller's value.
 func mappingSliceOfAny(columns []string) *rowPlan {
-	rp := &rowPlan{}
-	rp.build = func(v reflect.Value) *rowPlan {
-		vals := make([]any, len(columns))
-		args := make([]any, len(columns))
-		for i := range vals {
-			args[i] = &vals[i]
-		}
-		v.Set(reflect.ValueOf(vals))
-		return &rowPlan{args: args}
+	return &rowPlan{
+		build: func(v reflect.Value) *rowPlan {
+			vals := make([]any, len(columns))
+			args := make([]any, len(columns))
+			for i := range vals {
+				args[i] = &vals[i]
+			}
+			v.Set(reflect.ValueOf(vals))
+			return &rowPlan{args: args}
+		},
 	}
-	return rp
 }
 
 // mappingMapStringAny pre-allocates scan targets; vals are copied into a fresh map
@@ -216,13 +217,16 @@ func mappingMapStringAny(columns []string) *rowPlan {
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return &rowPlan{args: args, postScan: func(v reflect.Value) {
-		target := make(map[string]any, len(columns))
-		for i, name := range columns {
-			target[name] = vals[i]
-		}
-		v.Set(reflect.ValueOf(target))
-	}}
+	return &rowPlan{
+		args: args,
+		postScan: func(v reflect.Value) {
+			target := make(map[string]any, len(columns))
+			for i, name := range columns {
+				target[name] = vals[i]
+			}
+			v.Set(reflect.ValueOf(target))
+		},
+	}
 }
 
 // mappingKVStringAny pre-allocates scan targets; vals are copied into a fresh slice
@@ -233,30 +237,33 @@ func mappingKVStringAny(columns []string) *rowPlan {
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return &rowPlan{args: args, postScan: func(v reflect.Value) {
-		target := make([]irt.KV[string, any], len(columns))
-		for i, name := range columns {
-			target[i] = irt.MakeKV(name, vals[i])
-		}
-		v.Set(reflect.ValueOf(target))
-	}}
+	return &rowPlan{
+		args: args,
+		postScan: func(v reflect.Value) {
+			target := make([]irt.KV[string, any], len(columns))
+			for i, name := range columns {
+				target[i] = irt.MakeKV(name, vals[i])
+			}
+			v.Set(reflect.ValueOf(target))
+		},
+	}
 }
 
 // mappingSeq2StringAny allocates fresh scan targets per row because the returned
 // iterator is lazy and may be consumed after the next row is scanned.
 func mappingSeq2StringAny(columns []string) *rowPlan {
-	rp := &rowPlan{}
-	rp.build = func(_ reflect.Value) *rowPlan {
-		vals := make([]any, len(columns))
-		args := make([]any, len(columns))
-		for i := range vals {
-			args[i] = &vals[i]
-		}
-		return &rowPlan{args: args, postScan: func(v reflect.Value) {
-			v.Set(reflect.ValueOf(irt.Zip(irt.Slice(columns), irt.Slice(vals))))
-		}}
+	return &rowPlan{
+		build: func(reflect.Value) *rowPlan {
+			vals := make([]any, len(columns))
+			args := make([]any, len(columns))
+			for i := range vals {
+				args[i] = &vals[i]
+			}
+			return &rowPlan{args: args, postScan: func(v reflect.Value) {
+				v.Set(reflect.ValueOf(irt.Zip(irt.Slice(columns), irt.Slice(vals))))
+			}}
+		},
 	}
-	return rp
 }
 
 // mappingTypedSlice pre-allocates typed scan pointers; values are copied into a
@@ -333,27 +340,27 @@ func mappingTypedSeq2(typ reflect.Type, columns []string) *rowPlan {
 	for i, col := range columns {
 		keys[i] = reflect.ValueOf(col)
 	}
-	rp := &rowPlan{}
-	rp.build = func(_ reflect.Value) *rowPlan {
-		ptrs := make([]reflect.Value, len(columns))
-		args := make([]any, len(columns))
-		for i := range ptrs {
-			ptrs[i] = reflect.New(valType)
-			args[i] = ptrs[i].Interface()
-		}
-		return &rowPlan{args: args, postScan: func(v reflect.Value) {
-			v.Set(reflect.MakeFunc(typ, func(fnArgs []reflect.Value) []reflect.Value {
-				yield := fnArgs[0]
-				for i, key := range keys {
-					if !yield.Call([]reflect.Value{key, ptrs[i].Elem()})[0].Bool() {
-						break
+	return &rowPlan{
+		build: func(reflect.Value) *rowPlan {
+			ptrs := make([]reflect.Value, len(columns))
+			args := make([]any, len(columns))
+			for i := range ptrs {
+				ptrs[i] = reflect.New(valType)
+				args[i] = ptrs[i].Interface()
+			}
+			return &rowPlan{args: args, postScan: func(v reflect.Value) {
+				v.Set(reflect.MakeFunc(typ, func(fnArgs []reflect.Value) []reflect.Value {
+					yield := fnArgs[0]
+					for i, key := range keys {
+						if !yield.Call([]reflect.Value{key, ptrs[i].Elem()})[0].Bool() {
+							break
+						}
 					}
-				}
-				return nil
-			}))
-		}}
+					return nil
+				}))
+			}}
+		},
 	}
-	return rp
 }
 
 var (
