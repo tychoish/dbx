@@ -36,63 +36,76 @@ var (
 
 var cache = &adt.SyncMap[reflect.Type, map[string][]int]{}
 
-// rowPlan carries the per-row scan targets and an optional post-scan step.
-// resolve returns nil on error; postScan may be nil when no post-processing is needed.
+// rowPlan carries the per-row scan targets and optional per-row steps.
+//
+//   - build: non-nil for dynamic plans (struct, pointer, seq2, sliceOfAny). Called
+//     with the row's reflect.Value before Scan; returns the effective plan to use
+//     (may return the same *rowPlan with updated args, or a fresh one).
+//   - postScan: non-nil for collection types. Called with the row's reflect.Value
+//     after Scan to construct and set the result value.
+//
+// Static plans (map, typed slice, typed map, KV slice) have build==nil and a
+// pre-populated args slice; they go straight to Scan each row.
 type rowPlan struct {
 	args     []any
-	postScan func()
+	build    func(reflect.Value) *rowPlan
+	postScan func(reflect.Value)
 }
 
 // scanPlan holds the resolved scan strategy for a given cursor[T].
-// It is computed once on the first scan() call — including the columns for that
-// query — and reused for all subsequent rows, since every row has the same columns.
+// It is computed once on the first scan() call and reused for all subsequent rows.
+//
+// resolve is used only for top-level directly-scannable scalars (bool, int kinds,
+// float kinds, string, time.Time, sql.Scanner implementors) to avoid reflect
+// overhead. All other types use rp, whose build field handles per-row work.
 type scanPlan[T any] struct {
-	resolve func(t *T) *rowPlan
+	rp      *rowPlan
+	resolve func(*T) *rowPlan // non-nil for scalars only; avoids reflect
 }
 
-// wrapReflectMapping adapts a reflect.Value-based mapping function to the *T
-// signature required by scanPlan[T].
-func wrapReflectMapping[T any](inner func(reflect.Value) *rowPlan) func(*T) *rowPlan {
-	return func(t *T) *rowPlan {
-		return inner(reflect.ValueOf(t).Elem())
-	}
-}
-
-// buildPlan constructs the scan plan for T. For directly-scannable scalars (bool, int
-// kinds, float kinds, string, time.Time, sql.Scanner implementors) it uses the
-// allocation-free mappingDirect; for all other types it delegates to buildReflectMapping.
+// buildPlan constructs the scan plan for T. Top-level scalars use a generic
+// resolve function to avoid reflect overhead. All other types use buildReflectMapping,
+// which returns a *rowPlan whose build field (if non-nil) handles per-row setup.
 func (c cursor[T]) buildPlan(columns []string) (*scanPlan[T], error) {
 	typ := reflect.TypeFor[T]()
 	k := typ.Kind()
 
-	// mappingDirect avoids reflect overhead for the common scalar case.
+	// Scalar path: use a generic resolve closure so &t never goes through reflect.
 	if isScannableType(typ, k) {
 		if len(columns) != 1 {
 			var zero T
 			return nil, fmt.Errorf("%w %T", errNonStructT, zero)
 		}
-		return &scanPlan[T]{resolve: mappingDirect[T]}, nil
+		rp := &rowPlan{args: make([]any, 1)}
+		return &scanPlan[T]{resolve: func(t *T) *rowPlan {
+			rp.args[0] = t
+			return rp
+		}}, nil
 	}
 
-	inner, err := c.buildReflectMapping(typ, k, columns)
+	rp, err := c.buildReflectMapping(typ, k, columns)
 	if err != nil {
 		return nil, err
 	}
-	return &scanPlan[T]{resolve: wrapReflectMapping[T](inner)}, nil
+	return &scanPlan[T]{rp: rp}, nil
 }
 
-// buildReflectMapping returns a reflect.Value-based mapping function for typ.
-// It handles structs, all collection types, and pointer types (recursively).
-func (c cursor[T]) buildReflectMapping(typ reflect.Type, k reflect.Kind, columns []string) (func(reflect.Value) *rowPlan, error) {
+// buildReflectMapping returns a *rowPlan for typ. Static collection types return a
+// plan with build==nil and pre-populated args. Dynamic types (struct, pointer,
+// seq2, sliceOfAny) return a plan with build set to perform per-row setup.
+func (c cursor[T]) buildReflectMapping(typ reflect.Type, k reflect.Kind, columns []string) (*rowPlan, error) {
 	switch {
 	case isScannableType(typ, k):
-		// Reached when peeling a pointer reveals a scalar (e.g. *int, *time.Time).
+		// Reached only when peeling a pointer to a scalar (e.g. *int, *time.Time).
 		if len(columns) != 1 {
 			return nil, fmt.Errorf("%w %s", errNonStructT, typ)
 		}
-		return func(v reflect.Value) *rowPlan {
-			return &rowPlan{args: []any{v.Addr().Interface()}}
-		}, nil
+		rp := &rowPlan{args: make([]any, 1)}
+		rp.build = func(v reflect.Value) *rowPlan {
+			rp.args[0] = v.Addr().Interface()
+			return rp
+		}
+		return rp, nil
 	case k == reflect.Struct:
 		return c.buildStructMapping(typ, columns)
 	case k == reflect.Slice && isSliceOfAny(typ):
@@ -113,38 +126,48 @@ func (c cursor[T]) buildReflectMapping(typ reflect.Type, k reflect.Kind, columns
 		return mappingTypedSeq2(typ, columns), nil
 	case k == reflect.Pointer:
 		return c.buildPtrMapping(typ, columns)
+	default:
+		return nil, fmt.Errorf("%w %s", errUnsupportedT, typ)
 	}
-	return nil, fmt.Errorf("%w %s", errUnsupportedT, typ)
 }
 
 // buildPtrMapping peels one level of pointer and wraps the inner mapping so that
 // a fresh element is allocated per row and the pointer field is set after scanning.
 // Supports arbitrary pointer depth: *int, **int, *struct{}, *[]T, etc.
-func (c cursor[T]) buildPtrMapping(typ reflect.Type, columns []string) (func(reflect.Value) *rowPlan, error) {
+func (c cursor[T]) buildPtrMapping(typ reflect.Type, columns []string) (*rowPlan, error) {
 	elem := typ.Elem()
-	inner, err := c.buildReflectMapping(elem, elem.Kind(), columns)
+	innerRP, err := c.buildReflectMapping(elem, elem.Kind(), columns)
 	if err != nil {
 		return nil, err
 	}
-	return func(v reflect.Value) *rowPlan {
-		newElem := reflect.New(elem).Elem() // fresh allocation per row
-		rp := inner(newElem)
-		orig := rp.postScan
-		rp.postScan = func() {
-			if orig != nil {
-				orig()
-			}
-			v.Set(newElem.Addr()) // set the pointer field to the newly allocated value
+	rp := &rowPlan{}
+	rp.build = func(outerV reflect.Value) *rowPlan {
+		newElem := reflect.New(elem).Elem()
+		var inner *rowPlan
+		if innerRP.build != nil {
+			inner = innerRP.build(newElem)
+		} else {
+			inner = innerRP
 		}
-		return rp
-	}, nil
+		orig := inner.postScan
+		return &rowPlan{
+			args: inner.args,
+			postScan: func(v reflect.Value) {
+				if orig != nil {
+					orig(newElem)
+				}
+				v.Set(newElem.Addr())
+			},
+		}
+	}
+	return rp, nil
 }
 
 // buildStructMapping resolves column→field-index paths for a struct type and returns
-// a reflect.Value-based row-mapping function. Embedded fields are supported via
-// multi-element index paths from reflect.VisibleFields.
+// a rowPlan whose build field refreshes the args slice to point into each row's T.
+// Embedded fields are supported via multi-element index paths from reflect.VisibleFields.
 // When c.noCache is true the global struct field-map cache is bypassed.
-func (c cursor[T]) buildStructMapping(typ reflect.Type, columns []string) (func(reflect.Value) *rowPlan, error) {
+func (c cursor[T]) buildStructMapping(typ reflect.Type, columns []string) (*rowPlan, error) {
 	var m map[string][]int
 	if c.noCache {
 		m = parseStructFields(typ)
@@ -159,23 +182,21 @@ func (c cursor[T]) buildStructMapping(typ reflect.Type, columns []string) (func(
 		}
 		indices[i] = idx
 	}
-	args := make([]any, len(indices))
-	return func(v reflect.Value) *rowPlan {
+	rp := &rowPlan{args: make([]any, len(indices))}
+	rp.build = func(v reflect.Value) *rowPlan {
 		for i, idx := range indices {
-			args[i] = v.FieldByIndex(idx).Addr().Interface()
+			rp.args[i] = v.FieldByIndex(idx).Addr().Interface()
 		}
-		return &rowPlan{args: args}
-	}, nil
-}
-
-func mappingDirect[T any](t *T) *rowPlan {
-	return &rowPlan{args: []any{t}}
+		return rp
+	}
+	return rp, nil
 }
 
 // mappingSliceOfAny allocates fresh scan targets per row; the result slice shares
 // the backing array so it cannot be pre-allocated without aliasing the caller's value.
-func mappingSliceOfAny(columns []string) func(reflect.Value) *rowPlan {
-	return func(v reflect.Value) *rowPlan {
+func mappingSliceOfAny(columns []string) *rowPlan {
+	rp := &rowPlan{}
+	rp.build = func(v reflect.Value) *rowPlan {
 		vals := make([]any, len(columns))
 		args := make([]any, len(columns))
 		for i := range vals {
@@ -184,64 +205,63 @@ func mappingSliceOfAny(columns []string) func(reflect.Value) *rowPlan {
 		v.Set(reflect.ValueOf(vals))
 		return &rowPlan{args: args}
 	}
+	return rp
 }
 
 // mappingMapStringAny pre-allocates scan targets; vals are copied into a fresh map
-// in postScan so reuse across rows is safe.
-func mappingMapStringAny(columns []string) func(reflect.Value) *rowPlan {
+// in postScan so reuse across rows is safe. Returns a static rowPlan.
+func mappingMapStringAny(columns []string) *rowPlan {
 	vals := make([]any, len(columns))
 	args := make([]any, len(columns))
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return func(v reflect.Value) *rowPlan {
-		return &rowPlan{args: args, postScan: func() {
-			target := make(map[string]any, len(columns))
-			for i, name := range columns {
-				target[name] = vals[i]
-			}
-			v.Set(reflect.ValueOf(target))
-		}}
-	}
+	return &rowPlan{args: args, postScan: func(v reflect.Value) {
+		target := make(map[string]any, len(columns))
+		for i, name := range columns {
+			target[name] = vals[i]
+		}
+		v.Set(reflect.ValueOf(target))
+	}}
 }
 
 // mappingKVStringAny pre-allocates scan targets; vals are copied into a fresh slice
-// in postScan so reuse across rows is safe.
-func mappingKVStringAny(columns []string) func(reflect.Value) *rowPlan {
+// in postScan so reuse across rows is safe. Returns a static rowPlan.
+func mappingKVStringAny(columns []string) *rowPlan {
 	vals := make([]any, len(columns))
 	args := make([]any, len(columns))
 	for i := range vals {
 		args[i] = &vals[i]
 	}
-	return func(v reflect.Value) *rowPlan {
-		return &rowPlan{args: args, postScan: func() {
-			target := make([]irt.KV[string, any], len(columns))
-			for i, name := range columns {
-				target[i] = irt.MakeKV(name, vals[i])
-			}
-			v.Set(reflect.ValueOf(target))
-		}}
-	}
+	return &rowPlan{args: args, postScan: func(v reflect.Value) {
+		target := make([]irt.KV[string, any], len(columns))
+		for i, name := range columns {
+			target[i] = irt.MakeKV(name, vals[i])
+		}
+		v.Set(reflect.ValueOf(target))
+	}}
 }
 
 // mappingSeq2StringAny allocates fresh scan targets per row because the returned
 // iterator is lazy and may be consumed after the next row is scanned.
-func mappingSeq2StringAny(columns []string) func(reflect.Value) *rowPlan {
-	return func(v reflect.Value) *rowPlan {
+func mappingSeq2StringAny(columns []string) *rowPlan {
+	rp := &rowPlan{}
+	rp.build = func(_ reflect.Value) *rowPlan {
 		vals := make([]any, len(columns))
 		args := make([]any, len(columns))
 		for i := range vals {
 			args[i] = &vals[i]
 		}
-		return &rowPlan{args: args, postScan: func() {
+		return &rowPlan{args: args, postScan: func(v reflect.Value) {
 			v.Set(reflect.ValueOf(irt.Zip(irt.Slice(columns), irt.Slice(vals))))
 		}}
 	}
+	return rp
 }
 
 // mappingTypedSlice pre-allocates typed scan pointers; values are copied into a
-// fresh slice in postScan so reuse across rows is safe.
-func mappingTypedSlice(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+// fresh slice in postScan so reuse across rows is safe. Returns a static rowPlan.
+func mappingTypedSlice(typ reflect.Type, columns []string) *rowPlan {
 	elemType := typ.Elem()
 	ptrs := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
@@ -249,20 +269,18 @@ func mappingTypedSlice(typ reflect.Type, columns []string) func(reflect.Value) *
 		ptrs[i] = reflect.New(elemType)
 		args[i] = ptrs[i].Interface()
 	}
-	return func(v reflect.Value) *rowPlan {
-		return &rowPlan{args: args, postScan: func() {
-			target := reflect.MakeSlice(typ, len(ptrs), len(ptrs))
-			for i := range ptrs {
-				target.Index(i).Set(ptrs[i].Elem())
-			}
-			v.Set(target)
-		}}
-	}
+	return &rowPlan{args: args, postScan: func(v reflect.Value) {
+		target := reflect.MakeSlice(typ, len(ptrs), len(ptrs))
+		for i := range ptrs {
+			target.Index(i).Set(ptrs[i].Elem())
+		}
+		v.Set(target)
+	}}
 }
 
 // mappingTypedStringMap pre-allocates typed scan pointers; values are copied into a
-// fresh map in postScan so reuse across rows is safe.
-func mappingTypedStringMap(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+// fresh map in postScan so reuse across rows is safe. Returns a static rowPlan.
+func mappingTypedStringMap(typ reflect.Type, columns []string) *rowPlan {
 	elemType := typ.Elem()
 	ptrs := make([]reflect.Value, len(columns))
 	keys := make([]reflect.Value, len(columns))
@@ -272,21 +290,20 @@ func mappingTypedStringMap(typ reflect.Type, columns []string) func(reflect.Valu
 		args[i] = ptrs[i].Interface()
 		keys[i] = reflect.ValueOf(columns[i])
 	}
-	return func(v reflect.Value) *rowPlan {
-		return &rowPlan{args: args, postScan: func() {
-			target := reflect.MakeMap(typ)
-			for i, key := range keys {
-				target.SetMapIndex(key, ptrs[i].Elem())
-			}
-			v.Set(target)
-		}}
-	}
+	return &rowPlan{args: args, postScan: func(v reflect.Value) {
+		target := reflect.MakeMap(typ)
+		for i, key := range keys {
+			target.SetMapIndex(key, ptrs[i].Elem())
+		}
+		v.Set(target)
+	}}
 }
 
 // mappingTypedKVSlice pre-allocates typed scan pointers; values are copied into a
 // fresh KV slice in postScan so reuse across rows is safe.
 // The value type V is derived from the KV[string, V].Value field of typ's element.
-func mappingTypedKVSlice(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+// Returns a static rowPlan.
+func mappingTypedKVSlice(typ reflect.Type, columns []string) *rowPlan {
 	valType := typ.Elem().Field(1).Type // irt.KV[K,V].Value
 	ptrs := make([]reflect.Value, len(columns))
 	keys := make([]reflect.Value, len(columns))
@@ -296,40 +313,39 @@ func mappingTypedKVSlice(typ reflect.Type, columns []string) func(reflect.Value)
 		args[i] = ptrs[i].Interface()
 		keys[i] = reflect.ValueOf(columns[i])
 	}
-	return func(v reflect.Value) *rowPlan {
-		return &rowPlan{args: args, postScan: func() {
-			target := reflect.MakeSlice(typ, len(columns), len(columns))
-			for i, key := range keys {
-				kv := target.Index(i)
-				kv.Field(0).Set(key)
-				kv.Field(1).Set(ptrs[i].Elem())
-			}
-			v.Set(target)
-		}}
-	}
+	return &rowPlan{args: args, postScan: func(v reflect.Value) {
+		target := reflect.MakeSlice(typ, len(columns), len(columns))
+		for i, key := range keys {
+			kv := target.Index(i)
+			kv.Field(0).Set(key)
+			kv.Field(1).Set(ptrs[i].Elem())
+		}
+		v.Set(target)
+	}}
 }
 
 // mappingTypedSeq2 allocates fresh typed scan pointers per row because the returned
 // iterator is lazy and captures the pointers directly.
 // The value type V is derived from the yield function's second parameter.
-func mappingTypedSeq2(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
+func mappingTypedSeq2(typ reflect.Type, columns []string) *rowPlan {
 	valType := typ.In(0).In(1) // Seq2[K,V] = func(func(K,V) bool); yield.In(1) = V
-	return func(v reflect.Value) *rowPlan {
+	keys := make([]reflect.Value, len(columns))
+	for i, col := range columns {
+		keys[i] = reflect.ValueOf(col)
+	}
+	rp := &rowPlan{}
+	rp.build = func(_ reflect.Value) *rowPlan {
 		ptrs := make([]reflect.Value, len(columns))
 		args := make([]any, len(columns))
 		for i := range ptrs {
 			ptrs[i] = reflect.New(valType)
 			args[i] = ptrs[i].Interface()
 		}
-		return &rowPlan{args: args, postScan: func() {
-			vals := make([]reflect.Value, len(ptrs))
-			for i := range ptrs {
-				vals[i] = ptrs[i].Elem()
-			}
+		return &rowPlan{args: args, postScan: func(v reflect.Value) {
 			v.Set(reflect.MakeFunc(typ, func(fnArgs []reflect.Value) []reflect.Value {
 				yield := fnArgs[0]
-				for i, name := range columns {
-					if !yield.Call([]reflect.Value{reflect.ValueOf(name), vals[i]})[0].Bool() {
+				for i, key := range keys {
+					if !yield.Call([]reflect.Value{key, ptrs[i].Elem()})[0].Bool() {
 						break
 					}
 				}
@@ -337,6 +353,7 @@ func mappingTypedSeq2(typ reflect.Type, columns []string) func(reflect.Value) *r
 			}))
 		}}
 	}
+	return rp
 }
 
 var (

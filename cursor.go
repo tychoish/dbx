@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"iter"
+	"reflect"
 )
 
 type cursor[T any] struct {
@@ -82,23 +83,45 @@ func (c *cursor[T]) scan(s scanner, columns []string) (zero T, _ error) {
 
 	var t T
 
-	if c.plan == nil {
-		p, err := c.buildPlan(columns)
-		if err != nil {
-			return zero, err
-		}
-		c.plan = p
+	if err := c.initPlan(columns); err != nil {
+		return zero, err
 	}
 
-	rp := c.plan.resolve(&t)
+	rp := c.resolveRowPlan(&t)
 
 	if err := s.Scan(rp.args...); err != nil {
 		return zero, err
 	}
 
 	if rp.postScan != nil {
-		rp.postScan()
+		rp.postScan(reflect.ValueOf(&t).Elem())
 	}
 
 	return t, nil
+}
+
+func (c *cursor[T]) resolveRowPlan(t *T) *rowPlan {
+	if c.plan.rp == nil {
+		return c.plan.resolve(t)
+	}
+
+	if c.plan.rp.build != nil {
+		return c.plan.rp.build(reflect.ValueOf(t).Elem())
+	}
+
+	return c.plan.rp
+}
+
+func (c *cursor[T]) initPlan(cols []string) error {
+	if c.plan != nil {
+		return nil
+	}
+
+	var err error
+	c.plan, err = c.buildPlan(cols)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

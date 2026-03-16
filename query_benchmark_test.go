@@ -229,6 +229,36 @@ func BenchmarkDirectScan_typedKV(b *testing.B) {
 }
 
 // iter.Seq2[string, int] typed Seq2 --------------------------------------------
+//
+// typedSeq2 is the most expensive cursor type. Per-row cost breaks down as:
+//   - N allocs for ptrs ([]reflect.New): required because the iterator is lazy
+//     and captures those pointers directly; if rows share ptrs, consecutive
+//     iterators alias each other.
+//   - 1 alloc for args slice
+//   - 1 alloc for reflect.MakeFunc (wraps a reflect-dispatched closure)
+//   - reflect closure alloc per MakeFunc call
+//
+// Three optimisation options were considered:
+//
+//   Option 1 — Borrow semantics: pre-allocate ptrs at build time (static plan),
+//   document that the returned Seq2 is valid only until the next row is scanned.
+//   Eliminates the per-row ptr allocs. Changes the caller contract; suitable
+//   only if the iterator is consumed immediately inside a range loop.
+//
+//   Option 2 — Eager evaluation: pre-allocate ptrs (static plan), scan into them,
+//   then in postScan snapshot the values into a fresh []V and set v to a Seq2 that
+//   iterates the snapshot. Alloc count matches typedSlice (3). reflect.MakeFunc can
+//   be avoided entirely: construct a concrete func literal and pass it to
+//   reflect.ValueOf — the same technique mappingSeq2StringAny uses for the
+//   iter.Seq2[string,any] case. This only works if V is known at compile time, which
+//   requires a separate generic entry point (see Option 3).
+//
+//   Option 3 — Separate generic entry point (e.g. Seq2Query[V any]): exposes V as
+//   a type parameter, allowing a concrete func(yield func(string,V) bool) closure
+//   to be built without any reflection, matching the DirectScan_typedSeq2 baseline.
+//   Requires a distinct API surface alongside the general Query[T] path.
+//
+// Current implementation uses reflect.MakeFunc (no option applied).
 
 func BenchmarkCursorScan_typedSeq2(b *testing.B) {
 	benchmarkCursorWarm[iter.Seq2[string, int]](b, bench4cols, bench4vals)
