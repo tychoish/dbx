@@ -12,11 +12,6 @@ import (
 	"github.com/tychoish/fun/irt"
 )
 
-func scan[T any](s scanner, columns []string) (T, error) {
-	var cc cursor[T]
-	return cc.scan(s, columns)
-}
-
 type scanner interface {
 	Scan(...any) error
 }
