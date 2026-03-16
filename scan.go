@@ -29,6 +29,7 @@ func scan[T any](s scanner, columns []string) (T, error) {
 var (
 	reflectTypeTime    = reflect.TypeFor[time.Time]()
 	reflectTypeScanner = reflect.TypeFor[sql.Scanner]()
+	reflectTypeString  = reflect.TypeFor[string]()
 )
 
 func isScannable(v reflect.Value, kind reflect.Kind) bool {
@@ -54,8 +55,38 @@ var (
 func isCached(t reflect.Type) bool                     { return useCache && cache.Check(t) }
 func getCachedMapping(t reflect.Type) map[string][]int { return cache.Get(t) }
 
-func isSliceOfAny(v any) bool     { _, ok := v.([]any); return ok }
-func isStringToAnyMap(v any) bool { _, ok := v.(map[string]any); return ok }
+var (
+	reflectTypeSliceOfAny   = reflect.TypeFor[[]any]()
+	reflectTypeMapStringAny = reflect.TypeFor[map[string]any]()
+)
+
+func isSliceOfAny(t reflect.Type) bool     { return t == reflectTypeSliceOfAny }
+func isStringToAnyMap(t reflect.Type) bool { return t == reflectTypeMapStringAny }
+
+func isScannableType(t reflect.Type, k reflect.Kind) bool {
+	return (k >= reflect.Bool && k <= reflect.Float64) ||
+		k == reflect.String ||
+		t == reflectTypeTime ||
+		reflect.PointerTo(t).Implements(reflectTypeScanner)
+}
+
+// scannableStringMapElem checks whether t is a map[string]V where V is directly
+// scannable. Returns the element type and true if so.
+func scannableStringMapElem(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+	if k != reflect.Map || t.Key() != reflectTypeString {
+		return nil, false
+	}
+	elem := t.Elem()
+	return elem, isScannableType(elem, elem.Kind())
+}
+
+func scannableSliceElem(t reflect.Type, k reflect.Kind) (reflect.Type, bool) {
+	if k != reflect.Slice {
+		return nil, false
+	}
+	elem := t.Elem()
+	return elem, isScannableType(elem, elem.Kind())
+}
 
 // parseStruct parses the given struct type and returns a map of column names to field indexes.
 // The result is cached, so each struct type is parsed only once.

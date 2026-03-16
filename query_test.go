@@ -128,6 +128,43 @@ func Test_scan(t *testing.T) {
 		assert.NotError(t, err)
 		check.Equal(t, v, sql.Null[string]{V: "test", Valid: true})
 	})
+
+	t.Run("slice of any", func(t *testing.T) {
+		s := mockScanner{values: []any{1, "hello", true}}
+		v, err := scan[[]any](&s, []string{"a", "b", "c"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 3)
+		check.Equal(t, v[0], 1)
+		check.Equal(t, v[1], "hello")
+		check.Equal(t, v[2], true)
+	})
+
+	t.Run("map string any", func(t *testing.T) {
+		s := mockScanner{values: []any{42, "world"}}
+		v, err := scan[map[string]any](&s, []string{"id", "name"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 2)
+		check.Equal(t, v["id"], 42)
+		check.Equal(t, v["name"], "world")
+	})
+
+	t.Run("map string string", func(t *testing.T) {
+		s := mockScanner{values: []any{"alice", "bob"}}
+		v, err := scan[map[string]string](&s, []string{"first", "last"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 2)
+		check.Equal(t, v["first"], "alice")
+		check.Equal(t, v["last"], "bob")
+	})
+
+	t.Run("map string int", func(t *testing.T) {
+		s := mockScanner{values: []any{10, 20}}
+		v, err := scan[map[string]int](&s, []string{"a", "b"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 2)
+		check.Equal(t, v["a"], 10)
+		check.Equal(t, v["b"], 20)
+	})
 }
 
 type mockScanner struct {

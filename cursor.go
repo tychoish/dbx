@@ -88,37 +88,70 @@ func (c cursor[T]) scan(s scanner, columns []string) (zero T, err error) {
 
 	var t T
 	var args []any
+	var postScan func()
 
-	if v, k := c.resolveReflection(&t); isScannable(v, k) {
-		if len(columns) > 1 {
-			return zero, errNonStructT
-		}
+	if v, k := c.resolveReflection(&t); isScannable(v, k) && len(columns) == 1 {
 		args = []any{v.Addr().Interface()}
-	} else if t := v.Type(); isCached(t) {
-		args, err = resolveMapping(v, columns, getCachedMapping(t))
-	} else if v.Type().Implements(reflectTypeScanner) {
-		// TODO create implementation; may need to change scanner to make this possible
-		panic("not implemented (yet)")
+	} else if typ := v.Type(); isCached(typ) {
+		args, err = resolveMapping(v, columns, getCachedMapping(typ))
+	} else if typ.Implements(reflectTypeScanner) && len(columns) == 1 {
+		args = []any{v.Interface()}
 	} else if k == reflect.Struct {
-		args, err = resolveMapping(v, columns, parseStruct(t))
-	} else if k == reflect.Slice && isSliceOfAny(t) {
+		args, err = resolveMapping(v, columns, parseStruct(typ))
+	} else if k == reflect.Slice && isSliceOfAny(typ) {
+		vals := make([]any, len(columns))
 		args = make([]any, len(columns))
-		v.Addr().Set(reflect.ValueOf(args))
-	} else if k == reflect.Map && isStringToAnyMap(t) {
-		// TODO determine if it's possible to support other kinds of maps (with any kind of
-		//      theoretically scannable value, not just the trivally scanable ones)
-
-		// TODO write tests to ensure that this handle interior pointers correctly.
-		args = make([]any, len(columns))
-		target := make(map[string]any, len(columns))
-		for idx, name := range columns {
-			target[name] = args[idx]
+		for i := range vals {
+			args[i] = &vals[i]
 		}
+		v.Set(reflect.ValueOf(vals))
+	} else if k == reflect.Map && isStringToAnyMap(typ) {
+		vals := make([]any, len(columns))
 		args = make([]any, len(columns))
-		v.Addr().Set(reflect.ValueOf(target))
+		for i := range vals {
+			args[i] = &vals[i]
+		}
+		postScan = func() {
+			target := make(map[string]any, len(columns))
+			for idx, name := range columns {
+				target[name] = vals[idx]
+			}
+			v.Set(reflect.ValueOf(target))
+		}
+	} else if elemType, ok := scannableSliceElem(typ, k); ok {
+		ptrs := make([]reflect.Value, len(columns))
+		args = make([]any, len(columns))
+		for i := range ptrs {
+			ptrs[i] = reflect.New(elemType)
+			args[i] = ptrs[i].Interface()
+		}
+		postScan = func() {
+			target := reflect.MakeSlice(typ, len(columns), len(columns))
+			for i := range ptrs {
+				target.Index(i).Set(ptrs[i].Elem())
+			}
+			v.Set(target)
+		}
+	} else if elemType, ok := scannableStringMapElem(typ, k); ok {
+		ptrs := make([]reflect.Value, len(columns))
+		args = make([]any, len(columns))
+		for i := range ptrs {
+			ptrs[i] = reflect.New(elemType)
+			args[i] = ptrs[i].Interface()
+		}
+		postScan = func() {
+			target := reflect.MakeMap(typ)
+			for i, name := range columns {
+				target.SetMapIndex(reflect.ValueOf(name), ptrs[i].Elem())
+			}
+			v.Set(target)
+		}
+	} else if len(columns) > 1 && isScannable(v, k) {
+		err = fmt.Errorf("%w %T", errNonStructT, typ)
 	} else {
-		err = fmt.Errorf("%w %T", errUnsupportedT, t)
+		err = fmt.Errorf("%w %T", errUnsupportedT, typ)
 	}
+	// TODO implement as a special case of a slice irt.KV[string, any] type from the fun package
 
 	if err != nil {
 		return zero, err
@@ -126,6 +159,10 @@ func (c cursor[T]) scan(s scanner, columns []string) (zero T, err error) {
 
 	if err := s.Scan(args...); err != nil {
 		return zero, err
+	}
+
+	if postScan != nil {
+		postScan()
 	}
 
 	return t, nil
