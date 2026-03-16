@@ -12,6 +12,7 @@ import (
 	"github.com/tychoish/fun/assert"
 	"github.com/tychoish/fun/assert/check"
 	"github.com/tychoish/fun/erc"
+	"github.com/tychoish/fun/irt"
 )
 
 func TestCollect(t *testing.T) {
@@ -137,6 +138,48 @@ func Test_scan(t *testing.T) {
 		check.Equal(t, v[0], 1)
 		check.Equal(t, v[1], "hello")
 		check.Equal(t, v[2], true)
+	})
+
+	t.Run("kv string any slice", func(t *testing.T) {
+		s := mockScanner{values: []any{42, "world"}}
+		v, err := scan[[]irt.KV[string, any]](&s, []string{"id", "name"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 2)
+		check.Equal(t, v[0].Key, "id")
+		check.Equal(t, v[0].Value, 42)
+		check.Equal(t, v[1].Key, "name")
+		check.Equal(t, v[1].Value, "world")
+	})
+
+	t.Run("kv string string slice", func(t *testing.T) {
+		s := mockScanner{values: []any{"alice", "bob"}}
+		v, err := scan[[]irt.KV[string, string]](&s, []string{"first", "last"})
+		assert.NotError(t, err)
+		check.Equal(t, len(v), 2)
+		check.Equal(t, v[0].Key, "first")
+		check.Equal(t, v[0].Value, "alice")
+		check.Equal(t, v[1].Key, "last")
+		check.Equal(t, v[1].Value, "bob")
+	})
+
+	t.Run("seq2 string any", func(t *testing.T) {
+		s := mockScanner{values: []any{42, "world"}}
+		v, err := scan[iter.Seq2[string, any]](&s, []string{"id", "name"})
+		assert.NotError(t, err)
+		m := irt.Collect2(v)
+		check.Equal(t, len(m), 2)
+		check.Equal(t, m["id"], 42)
+		check.Equal(t, m["name"], "world")
+	})
+
+	t.Run("seq2 string string", func(t *testing.T) {
+		s := mockScanner{values: []any{"alice", "bob"}}
+		v, err := scan[iter.Seq2[string, string]](&s, []string{"first", "last"})
+		assert.NotError(t, err)
+		m := irt.Collect2(v)
+		check.Equal(t, len(m), 2)
+		check.Equal(t, m["first"], "alice")
+		check.Equal(t, m["last"], "bob")
 	})
 
 	t.Run("map string any", func(t *testing.T) {
