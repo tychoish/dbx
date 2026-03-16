@@ -265,16 +265,18 @@ func mappingTypedSlice(typ reflect.Type, columns []string) func(reflect.Value) *
 func mappingTypedStringMap(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
 	elemType := typ.Elem()
 	ptrs := make([]reflect.Value, len(columns))
+	keys := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
 	for i := range ptrs {
 		ptrs[i] = reflect.New(elemType)
 		args[i] = ptrs[i].Interface()
+		keys[i] = reflect.ValueOf(columns[i])
 	}
 	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := reflect.MakeMap(typ)
-			for i, name := range columns {
-				target.SetMapIndex(reflect.ValueOf(name), ptrs[i].Elem())
+			for i, key := range keys {
+				target.SetMapIndex(key, ptrs[i].Elem())
 			}
 			v.Set(target)
 		}}
@@ -287,17 +289,19 @@ func mappingTypedStringMap(typ reflect.Type, columns []string) func(reflect.Valu
 func mappingTypedKVSlice(typ reflect.Type, columns []string) func(reflect.Value) *rowPlan {
 	valType := typ.Elem().Field(1).Type // irt.KV[K,V].Value
 	ptrs := make([]reflect.Value, len(columns))
+	keys := make([]reflect.Value, len(columns))
 	args := make([]any, len(columns))
 	for i := range ptrs {
 		ptrs[i] = reflect.New(valType)
 		args[i] = ptrs[i].Interface()
+		keys[i] = reflect.ValueOf(columns[i])
 	}
 	return func(v reflect.Value) *rowPlan {
 		return &rowPlan{args: args, postScan: func() {
 			target := reflect.MakeSlice(typ, len(columns), len(columns))
-			for i, name := range columns {
+			for i, key := range keys {
 				kv := target.Index(i)
-				kv.Field(0).Set(reflect.ValueOf(name))
+				kv.Field(0).Set(key)
 				kv.Field(1).Set(ptrs[i].Elem())
 			}
 			v.Set(target)
