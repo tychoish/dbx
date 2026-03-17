@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"iter"
+
+	"github.com/tychoish/fun/irt"
 )
 
 // Queryer is an interface implemented by [sql.DB] and [sql.Tx].
@@ -45,4 +47,9 @@ func Query[T any](ctx context.Context, q Queryer, query string, args ...any) ite
 func QueryRow[T any](ctx context.Context, q Queryer, query string, args ...any) (T, error) {
 	var cc cursor[T]
 	return cc.findOne(ctx, q, query, args)
+}
+
+func Cursor[T any](rows *sql.Rows) iter.Seq2[T, error] {
+	var cc cursor[T]
+	return irt.KVsplit(irt.WithHooks(irt.KVjoin(cc.rows(rows)), nil, func() { _ = rows.Close() }))
 }

@@ -22,6 +22,13 @@ func (c *cursor[T]) findMany(ctx context.Context, q Queryer, query string, args 
 		}
 		defer rows.Close()
 
+		flush2(c.rows(rows), yield)
+	}
+}
+
+func (c *cursor[T]) rows(rows *sql.Rows) iter.Seq2[T, error] {
+	var zero T
+	return func(yield func(T, error) bool) {
 		columns, err := rows.Columns()
 		if err != nil {
 			yield(zero, err)
@@ -124,4 +131,12 @@ func (c *cursor[T]) initPlan(cols []string) error {
 	}
 
 	return nil
+}
+
+func flush2[A, B any](seq iter.Seq2[A, B], yield func(A, B) bool) {
+	for k, v := range seq {
+		if !yield(k, v) {
+			return
+		}
+	}
 }
