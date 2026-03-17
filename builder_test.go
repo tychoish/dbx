@@ -7,9 +7,9 @@ import (
 	"github.com/tychoish/fun/assert"
 )
 
-//go:generate go run -tags=cp go-simpler.org/assert/cmd/cp@v0.9.0 -dir=internal
-
 func TestBuilder(t *testing.T) {
+	query, args := queries.Queryf()
+
 	var qb queries.Builder
 	qb.Appendf("SELECT %s FROM tbl WHERE 1=1", "*")
 	qb.Appendf(" AND foo = %$", 42)
@@ -46,7 +46,7 @@ func TestBuilder_dialects(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			query, args := queries.Build(test.format, 1, 2, 3)
+			query, args := queries.SQL(test.format, 1, 2, 3)
 			assert.Equal(t, query, test.query)
 			assert.EqualItems(t, args, []any{1, 2, 3})
 		})
@@ -54,7 +54,8 @@ func TestBuilder_dialects(t *testing.T) {
 }
 
 func TestBuilder_sliceArgument(t *testing.T) {
-	query, args := queries.Build("SELECT * FROM tbl WHERE foo IN (%+$)", []int{1, 2, 3})
+	format := "SELECT * FROM tbl WHERE foo IN (%+$)"
+	query, args := queries.SQL(format, []int{1, 2, 3})
 	assert.Equal(t, query, "SELECT * FROM tbl WHERE foo IN ($1, $2, $3)")
 	assert.EqualItems(t, args, []any{1, 2, 3})
 }
@@ -99,7 +100,7 @@ func TestBuilder_badQuery(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			query, _ := queries.Build(test.format, test.args...)
+			query, _ := queries.SQL(test.format, test.args...)
 			assert.Equal(t, query, test.query)
 		})
 	}

@@ -4,24 +4,28 @@ package dbx
 import (
 	"fmt"
 	"io"
-	"reflect"
-	"strings"
+	"iter"
+	"time"
+
+	"github.com/tychoish/fun/irt"
+	"github.com/tychoish/fun/strut"
 )
 
-// Builder is a raw SQL query builder.
+// queryBuilder is a raw SQL query builder.
 // The zero value is ready to use.
-// Do not copy a non-zero Builder.
-type Builder struct {
-	// TODO: prealloc?
-	query       strings.Builder
+// Do not copy a non-zero queryBuilder.
+type queryBuilder struct {
 	args        []any
 	counter     int
 	placeholder rune
 }
 
-// Appendf formats according to the given format and appends the result to the query.
-// It works like [fmt.Appendf], meaning all the rules from the [fmt] package are applied.
-// In addition, Appendf supports special verbs that automatically expand to database placeholders.
+// SQL exposes a Printf style query builder.
+//
+// SQL formats according to the given format and appends the result
+// to the query.  It works like fmt.Appendf meaning all the rules from
+// the [fmt] package are applied.  In addition, SQL supports
+// special verbs that automatically expand to database placeholders.
 //
 //	-----------------------------------------------
 //	| Database               | Verb | Placeholder |
@@ -35,35 +39,33 @@ type Builder struct {
 // Here, N is an auto-incrementing counter.
 // For example, "%$, %$, %$" expands to "$1, $2, $3".
 //
-// If a special verb includes the "+" flag, it automatically expands to multiple placeholders.
-// For example, given the verb "%+?" and the argument []int{1, 2, 3},
-// Appendf writes "?, ?, ?" to the query and appends 1, 2, and 3 to the arguments.
-// You may want to use this flag to build "WHERE IN (...)" clauses.
+// If a special verb includes the "+" flag, it automatically expands
+// to multiple placeholders.  For example, given the verb "%+?" and
+// the argument []int{1, 2, 3}, SQL writes "?, ?, ?" to the query
+// and appends 1, 2, and 3 to the arguments.  You may want to use this
+// flag to build "WHERE IN (...)" clauses.
 //
-// Make sure to always pass arguments from user input with placeholder verbs to avoid SQL injections.
-func (b *Builder) Appendf(format string, a ...any) {
+// Make sure to always pass arguments from user input with placeholder
+// verbs to avoid SQL injections.
+func SQL(tpl string, a ...any) (string, []any) {
+	var b queryBuilder
+
 	fs := make([]any, len(a))
 	for i := range a {
-		fs[i] = formatter{arg: a[i], builder: b}
+		fs[i] = formatter{arg: a[i], builder: &b}
 	}
-	fmt.Fprintf(&b.query, format, fs...)
-}
 
-// Build returns the query and its arguments.
-func (b *Builder) Build() (query string, args []any) {
-	return b.query.String(), b.args
-}
+	mut := strut.MakeMutable(len(tpl) + (len(a) * 4))
+	defer mut.Release()
 
-// Build is a shorthand for a new [Builder] + [Builder.Appendf] + [Builder.Build].
-func Build(format string, a ...any) (query string, args []any) {
-	var b Builder
-	b.Appendf(format, a...)
-	return b.Build()
+	fmt.Fprintf(mut, tpl, fs...)
+
+	return mut.String(), b.args
 }
 
 type formatter struct {
 	arg     any
-	builder *Builder
+	builder *queryBuilder
 }
 
 // Format implements [fmt.Formatter].
@@ -72,50 +74,130 @@ func (f formatter) Format(s fmt.State, verb rune) {
 	case '?', '$', '@', ':':
 		if f.builder.placeholder == 0 {
 			f.builder.placeholder = verb
-		}
-		if f.builder.placeholder != verb {
+		} else if f.builder.placeholder != verb {
 			panic("unexpected placeholder")
 		}
+
 		if s.Flag('+') {
-			appendAll(s, f.builder, verb, f.arg)
+			f.builder.appendAll(s, f.arg)
 		} else {
-			appendOne(s, f.builder, verb, f.arg)
+			f.builder.appendOne(s, f.arg)
 		}
 	default:
-		format := fmt.FormatString(s, verb)
-		fmt.Fprintf(s, format, f.arg)
+		fmt.Fprintf(s, fmt.FormatString(s, verb), f.arg)
 	}
 }
 
-func appendOne(w io.Writer, b *Builder, verb rune, arg any) {
-	switch verb {
+var (
+	builderSqlitePlaceholder = []byte{'?'}
+	builderConjunction       = []byte{',', ' '}
+)
+
+func (b *queryBuilder) appendOne(w io.Writer, arg any) {
+	b.counter++
+	b.args = append(b.args, arg)
+
+	switch b.placeholder {
 	case '?':
-		fmt.Fprint(w, "?")
+		_, _ = w.Write(builderSqlitePlaceholder)
 	case '$':
-		b.counter++
 		fmt.Fprintf(w, "$%d", b.counter)
 	case '@':
-		b.counter++
 		fmt.Fprintf(w, "@p%d", b.counter)
 	case ':':
-		b.counter++
 		fmt.Fprintf(w, ":%d", b.counter)
 	}
-	b.args = append(b.args, arg)
 }
 
-func appendAll(w io.Writer, b *Builder, verb rune, arg any) {
-	slice := reflect.ValueOf(arg)
-	if slice.Kind() != reflect.Slice {
+func (b *queryBuilder) appendAll(w io.Writer, arg any) {
+	seq := getSlice(arg)
+	if seq == nil {
 		panic("non-slice argument")
 	}
-	if slice.Len() == 0 {
+	var ct int
+	for val := range seq {
+		if ct > 0 {
+			_, _ = w.Write(builderConjunction)
+		}
+		ct++
+		b.appendOne(w, val)
+	}
+	if ct == 0 {
 		panic("zero-length slice argument")
 	}
-	for i := range slice.Len() {
-		if i > 0 {
-			fmt.Fprint(w, ", ")
-		}
-		appendOne(w, b, verb, slice.Index(i).Interface())
+}
+
+func getSlice(arg any) iter.Seq[any] {
+	switch data := arg.(type) {
+	case []any:
+		return irt.Slice(data)
+	case []string:
+		return irt.Any(irt.Slice(data))
+	case []bool:
+		return irt.Any(irt.Slice(data))
+	case []int:
+		return irt.Any(irt.Slice(data))
+	case []int8:
+		return irt.Any(irt.Slice(data))
+	case []int16:
+		return irt.Any(irt.Slice(data))
+	case []int32:
+		return irt.Any(irt.Slice(data))
+	case []int64:
+		return irt.Any(irt.Slice(data))
+	case []uint:
+		return irt.Any(irt.Slice(data))
+	case []uint8:
+		return irt.Any(irt.Slice(data))
+	case []uint16:
+		return irt.Any(irt.Slice(data))
+	case []uint32:
+		return irt.Any(irt.Slice(data))
+	case []uint64:
+		return irt.Any(irt.Slice(data))
+	case []time.Time:
+		return irt.Any(irt.Slice(data))
+	case []float64:
+		return irt.Any(irt.Slice(data))
+	case []float32:
+		return irt.Any(irt.Slice(data))
+	case [][]byte:
+		return irt.Any(irt.Slice(data))
+	case []*any:
+		return irt.Any(irt.Slice(data))
+	case []*string:
+		return irt.Any(irt.Slice(data))
+	case []*bool:
+		return irt.Any(irt.Slice(data))
+	case []*int:
+		return irt.Any(irt.Slice(data))
+	case []*int8:
+		return irt.Any(irt.Slice(data))
+	case []*int16:
+		return irt.Any(irt.Slice(data))
+	case []*int32:
+		return irt.Any(irt.Slice(data))
+	case []*int64:
+		return irt.Any(irt.Slice(data))
+	case []*uint:
+		return irt.Any(irt.Slice(data))
+	case []*uint8:
+		return irt.Any(irt.Slice(data))
+	case []*uint16:
+		return irt.Any(irt.Slice(data))
+	case []*uint32:
+		return irt.Any(irt.Slice(data))
+	case []*uint64:
+		return irt.Any(irt.Slice(data))
+	case []*time.Time:
+		return irt.Any(irt.Slice(data))
+	case []*float64:
+		return irt.Any(irt.Slice(data))
+	case []*float32:
+		return irt.Any(irt.Slice(data))
+	case []*[]byte:
+		return irt.Any(irt.Slice(data))
+	default:
+		return nil
 	}
 }
