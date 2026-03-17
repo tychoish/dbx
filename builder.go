@@ -7,25 +7,27 @@ import (
 	"iter"
 	"time"
 
+	"github.com/tychoish/fun/dt"
 	"github.com/tychoish/fun/irt"
 	"github.com/tychoish/fun/strut"
 )
 
-// queryBuilder is a raw SQL query builder.
-// The zero value is ready to use.
-// Do not copy a non-zero queryBuilder.
-type queryBuilder struct {
-	args        []any
-	counter     int
-	placeholder rune
-}
-
-// SQL exposes a Printf style query builder.
+// Builder is a string-oriented query builder to produce well formed
+// parameterized queries without a new DSL, or mess string building by
+// hand. Use either directly, using he With, WithSQL, and WithParams, or
+// with the standalone SQL() helper.
 //
-// SQL formats according to the given format and appends the result
-// to the query.  It works like fmt.Appendf meaning all the rules from
-// the [fmt] package are applied.  In addition, SQL supports
-// special verbs that automatically expand to database placeholders.
+// dbx.SQL() and Builder.With() work like a SQL-printf, where
+// Builder.WithSQL and Builder.WithParams allow you to add SQL clauses
+// and query parameters separately. In general, use dbx.SQL() for
+// smaller queries, and use Builder.With() for longer or more
+// complicated queries that you want to break up, using WithSQL and
+// WithParams for specific cases as needed.
+//
+// The builder formats according to the given format and appends the
+// result to the query. It works like fmt.Appendf meaning all the rules
+// from the [fmt] package are applied. In addition, SQL supports special
+// verbs that automatically expand to database placeholders.
 //
 //	-----------------------------------------------
 //	| Database               | Verb | Placeholder |
@@ -36,31 +38,48 @@ type queryBuilder struct {
 //	| Oracle Database        | %:   | :N          |
 //	-----------------------------------------------
 //
-// Here, N is an auto-incrementing counter.
-// For example, "%$, %$, %$" expands to "$1, $2, $3".
+// Here, N is an auto-incrementing counter. For example, "%$, %$, %$"
+// expands to "$1, $2, $3".
 //
 // If a special verb includes the "+" flag, it automatically expands
 // to multiple placeholders.  For example, given the verb "%+?" and
-// the argument []int{1, 2, 3}, SQL writes "?, ?, ?" to the query
+// the argument []int{1, 2, 3}, the builder will produce"?, ?, ?" to the query
 // and appends 1, 2, and 3 to the arguments.  You may want to use this
 // flag to build "WHERE IN (...)" clauses.
 //
 // Make sure to always pass arguments from user input with placeholder
 // verbs to avoid SQL injections.
-func SQL(tpl string, a ...any) (string, []any) {
-	var b queryBuilder
+type Builder struct {
+	qb   queryBuilder
+	sql  strut.Buffer
+	args dt.List[formatter]
+}
 
-	fs := make([]any, len(a))
-	for i := range a {
-		fs[i] = formatter{arg: a[i], builder: &b}
-	}
+// SQL exposes a Printf style query builder that wraps 'dbx.Builder'
+func SQL(tpl string, a ...any) (string, []any)           { return new(Builder).With(tpl, a...).Build() }
+func (b *Builder) WithSQL(statement ...string) *Builder  { b.sql.Concat(statement...); return b }
+func (b *Builder) WithParams(args ...any) *Builder       { b.args.Extend(b.pseq(args)); return b }
+func (b *Builder) With(tpl string, args ...any) *Builder { return b.pushStmt(tpl).pushArgs(args) }
+func (b *Builder) as(arg any) formatter                  { return formatter{arg: arg, builder: &b.qb} }
+func (b *Builder) pseq(args []any) iter.Seq[formatter]   { return irt.Convert(irt.Slice(args), b.as) }
+func (b *Builder) pushArgs(args []any) *Builder          { b.args.Extend(b.pseq(args)); return b }
+func (b *Builder) pushStmt(s string) *Builder            { b.sql.WriteString(s); return b }
 
-	mut := strut.MakeMutable(len(tpl) + (len(a) * 4))
+func (b *Builder) Build() (string, []any) {
+	mut := strut.MakeMutable(b.sql.Len() + 4*b.args.Len())
 	defer mut.Release()
 
-	fmt.Fprintf(mut, tpl, fs...)
+	fmt.Fprintf(mut, b.sql.String(), irt.Collect(irt.Any(b.args.IteratorFront()), b.args.Len())...)
+	return mut.String(), b.qb.args
+}
 
-	return mut.String(), b.args
+// queryBuilder is a raw SQL query builder.
+// The zero value is ready to use.
+// Do not copy a non-zero queryBuilder.
+type queryBuilder struct {
+	args        []any
+	counter     int
+	placeholder rune
 }
 
 type formatter struct {

@@ -8,13 +8,12 @@ import (
 )
 
 func TestBuilder(t *testing.T) {
-	query, args := queries.Queryf()
-
 	var qb queries.Builder
-	qb.Appendf("SELECT %s FROM tbl WHERE 1=1", "*")
-	qb.Appendf(" AND foo = %$", 42)
-	qb.Appendf(" AND bar = %$", "test")
-	qb.Appendf(" AND baz = %$", false)
+
+	qb.With("SELECT %s FROM tbl WHERE 1=1", "*")
+	qb.With(" AND foo = %$", 42)
+	qb.With(" AND bar = %$", "test")
+	qb.With(" AND baz = %$", false)
 
 	query, args := qb.Build()
 	assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1 AND foo = $1 AND bar = $2 AND baz = $3")
