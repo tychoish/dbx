@@ -14,7 +14,7 @@ func BenchmarkQuery_withScanner(b *testing.B) {
 	db := newDB(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		for range Query[mediumRow](b.Context(), db, "") {
+		for range Query[mediumRow](b.Context(), db.QueryContext, "") {
 		}
 	}
 }
@@ -36,7 +36,7 @@ func BenchmarkQueryRow_withScanner(b *testing.B) {
 	db := newDB(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = QueryRow[mediumRow](b.Context(), db, "")
+		_, _ = QueryRow[mediumRow](b.Context(), db.QueryContext, "")
 	}
 }
 
@@ -172,6 +172,7 @@ func benchmarkCursorWarm[T any](b *testing.B, columns []string, values []any) {
 func BenchmarkCursorScan_scalar(b *testing.B) {
 	benchmarkCursorWarm[int](b, bench1cols, bench1vals)
 }
+
 func BenchmarkDirectScan_scalar(b *testing.B) {
 	s := mockScanner{values: bench1vals}
 	var v int
@@ -186,6 +187,7 @@ func BenchmarkDirectScan_scalar(b *testing.B) {
 func BenchmarkCursorScan_struct4(b *testing.B) {
 	benchmarkCursorWarm[smallRow](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_struct4(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var row smallRow
@@ -200,6 +202,7 @@ func BenchmarkDirectScan_struct4(b *testing.B) {
 func BenchmarkCursorScan_typedSlice(b *testing.B) {
 	benchmarkCursorWarm[[]int](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_typedSlice(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var a, b2, c, d int
@@ -215,6 +218,7 @@ func BenchmarkDirectScan_typedSlice(b *testing.B) {
 func BenchmarkCursorScan_typedKV(b *testing.B) {
 	benchmarkCursorWarm[[]irt.KV[string, int]](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_typedKV(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var a, b2, c, d int
@@ -263,6 +267,7 @@ func BenchmarkDirectScan_typedKV(b *testing.B) {
 func BenchmarkCursorScan_typedSeq2(b *testing.B) {
 	benchmarkCursorWarm[iter.Seq2[string, int]](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_typedSeq2(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var a, b2, c, d int
@@ -285,6 +290,7 @@ func BenchmarkDirectScan_typedSeq2(b *testing.B) {
 func BenchmarkCursorScan_anyKV(b *testing.B) {
 	benchmarkCursorWarm[[]irt.KV[string, any]](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_anyKV(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var vals [4]any
@@ -304,6 +310,7 @@ func BenchmarkDirectScan_anyKV(b *testing.B) {
 func BenchmarkCursorScan_anySeq2(b *testing.B) {
 	benchmarkCursorWarm[iter.Seq2[string, any]](b, bench4cols, bench4vals)
 }
+
 func BenchmarkDirectScan_anySeq2(b *testing.B) {
 	s := mockScanner{values: bench4vals}
 	var vals [4]any

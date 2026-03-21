@@ -8,10 +8,9 @@ import (
 	"github.com/tychoish/fun/irt"
 )
 
-// Queryer is an interface implemented by [sql.DB] and [sql.Tx].
-type Queryer interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
+// QueryFunc describes the operation that produces a cursor. 'QueryContext', provided by the
+// database and transaction types, is the likely provider of this function.
+type QueryFunc func(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 
 // Query executes a query that returns rows, scans each row into a T, and returns an iterator over the Ts.
 // If an error occurs, the iterator yields it as the second value, and the caller should then stop the iteration.
@@ -34,7 +33,7 @@ type Queryer interface {
 // Untagged and unexported and fields are ignored.
 //
 // If the caller prefers the result to be a slice rather than an iterator, Query can be combined with [Collect].
-func Query[T any](ctx context.Context, q Queryer, query string, args ...any) iter.Seq2[T, error] {
+func Query[T any](ctx context.Context, q QueryFunc, query string, args ...any) iter.Seq2[T, error] {
 	var cc cursor[T]
 	return cc.findMany(ctx, q, query, args)
 }
@@ -44,7 +43,7 @@ func Query[T any](ctx context.Context, q Queryer, query string, args ...any) ite
 // Like [sql.DB.QueryRow], QueryRow returns [sql.ErrNoRows] if the query selects no rows,
 // otherwise it scans the first row and discards the rest.
 // See the [Query] documentation for details on supported Ts.
-func QueryRow[T any](ctx context.Context, q Queryer, query string, args ...any) (T, error) {
+func QueryRow[T any](ctx context.Context, q QueryFunc, query string, args ...any) (T, error) {
 	var cc cursor[T]
 	return cc.findOne(ctx, q, query, args)
 }

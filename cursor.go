@@ -12,10 +12,10 @@ type cursor[T any] struct {
 	noCache bool // when true, bypasses the global struct field-map cache
 }
 
-func (c *cursor[T]) findMany(ctx context.Context, q Queryer, query string, args []any) iter.Seq2[T, error] {
+func (c *cursor[T]) findMany(ctx context.Context, q QueryFunc, query string, args []any) iter.Seq2[T, error] {
 	var zero T
 	return func(yield func(T, error) bool) {
-		rows, err := q.QueryContext(ctx, query, args...)
+		rows, err := q(ctx, query, args...)
 		if err != nil {
 			yield(zero, err)
 			return
@@ -52,9 +52,9 @@ func (c *cursor[T]) rows(rows *sql.Rows) iter.Seq2[T, error] {
 	}
 }
 
-func (c *cursor[T]) findOne(ctx context.Context, q Queryer, query string, args []any) (T, error) {
+func (c *cursor[T]) findOne(ctx context.Context, q QueryFunc, query string, args []any) (T, error) {
 	var zero T
-	rows, err := q.QueryContext(ctx, query, args...)
+	rows, err := q(ctx, query, args...)
 	if err != nil {
 		return zero, err
 	}
