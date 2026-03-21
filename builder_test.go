@@ -59,6 +59,23 @@ func TestBuilder_sliceArgument(t *testing.T) {
 	assert.EqualItems(t, args, []any{1, 2, 3})
 }
 
+func TestBuilder_WithSQL(t *testing.T) {
+	var qb queries.Builder
+	qb.WithSQL("SELECT * FROM tbl", " ORDER BY id")
+	query, args := qb.Build()
+	assert.Equal(t, query, "SELECT * FROM tbl ORDER BY id")
+	assert.Equal(t, len(args), 0)
+}
+
+func TestBuilder_WithParams(t *testing.T) {
+	var qb queries.Builder
+	qb.WithSQL("SELECT * FROM tbl WHERE foo = %$ AND bar = %$")
+	qb.WithParams(42, "test")
+	query, args := qb.Build()
+	assert.Equal(t, query, "SELECT * FROM tbl WHERE foo = $1 AND bar = $2")
+	assert.EqualItems(t, args, []any{42, "test"})
+}
+
 func TestBuilder_badQuery(t *testing.T) {
 	tests := map[string]struct {
 		format string

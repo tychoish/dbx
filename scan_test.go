@@ -54,7 +54,8 @@ func TestScan_errors(t *testing.T) {
 		check.ErrorIs(t, err, errNonStructT)
 	})
 	t.Run("struct missing column tag", func(t *testing.T) {
-		_, err := scanOnce[struct{ Foo int }](nil, []string{"foo"})
+		// "bar" matches neither the field's tags nor its lowercase fallback "foo"
+		_, err := scanOnce[struct{ Foo int }](nil, []string{"bar"})
 		check.ErrorIs(t, err, errNoStructField)
 	})
 	t.Run("struct empty tags missing column", func(t *testing.T) {
@@ -361,6 +362,42 @@ func TestScan_struct(t *testing.T) {
 		check.Equal(t, v.A, 1)
 		check.Equal(t, v.B, 2)
 		check.Equal(t, v.C, 3)
+	})
+}
+
+// TestScan_structTagPrecedence verifies that for struct fields the column name
+// is resolved as: dbx tag > sql tag > db tag > lowercase field name.
+func TestScan_structTagPrecedence(t *testing.T) {
+	type row struct {
+		AllTags    string `dbx:"dbx_col" sql:"sql_col" db:"db_col"` // dbx wins
+		SqlAndDb   string `sql:"sql_col2" db:"db_col2"`              // sql wins
+		DbOnly     string `db:"db_col3"`                             // db wins
+		NoTags     string                                            // fallback: "notags"
+		unexported string                                            //nolint // never mapped
+	}
+
+	t.Run("correct column names used", func(t *testing.T) {
+		s := mockScanner{values: []any{"by-dbx", "by-sql", "by-db", "by-name"}}
+		v, err := scanOnce[row](&s, []string{"dbx_col", "sql_col2", "db_col3", "notags"})
+		assert.NotError(t, err)
+		check.Equal(t, v.AllTags, "by-dbx")
+		check.Equal(t, v.SqlAndDb, "by-sql")
+		check.Equal(t, v.DbOnly, "by-db")
+		check.Equal(t, v.NoTags, "by-name")
+	})
+
+	t.Run("dbx overrides sql and db column names", func(t *testing.T) {
+		// The sql and db tag values on AllTags must NOT be addressable as columns.
+		for _, shadowed := range []string{"sql_col", "db_col"} {
+			_, err := scanOnce[row](nil, []string{shadowed})
+			check.ErrorIs(t, err, errNoStructField)
+		}
+	})
+
+	t.Run("sql overrides db column name", func(t *testing.T) {
+		// The db tag value on SqlAndDb must NOT be addressable as a column.
+		_, err := scanOnce[row](nil, []string{"db_col2"})
+		check.ErrorIs(t, err, errNoStructField)
 	})
 }
 
@@ -754,13 +791,19 @@ func TestParseStructFields(t *testing.T) {
 		check.Equal(t, ok, true)
 	})
 
-	t.Run("empty sql tag excluded", func(t *testing.T) {
+	t.Run("empty sql tag falls back to lowercase name", func(t *testing.T) {
+		// An empty tag value is treated as absent; the field is still reachable
+		// via the lowercase fallback ("b" for field B).
 		type row struct {
 			A int `sql:"a"`
 			B int `sql:""`
 		}
 		m := parseStructFields(reflect.TypeFor[row]())
-		check.Equal(t, len(m), 1)
+		check.Equal(t, len(m), 2)
+		_, hasA := m["a"]
+		_, hasB := m["b"]
+		check.Equal(t, hasA, true)
+		check.Equal(t, hasB, true)
 	})
 }
 
@@ -957,5 +1000,264 @@ func TestScan_scannerInterface(t *testing.T) {
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
 			check.Equal(t, *v, sql.Null[string]{V: "world", Valid: true})
+	})
+}
+
+// ---- parseStructFields: tag priority and edge cases -------------------------
+
+// TestParseStructFields_tagPrecedenceDirect exercises parseStructFields directly,
+// covering every branch of the dbx > sql > db > lowercase priority chain.
+func TestParseStructFields_tagPrecedenceDirect(t *testing.T) {
+	t.Run("dbx only", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"dbx_name"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasDbx := m["dbx_name"]
+		check.Equal(t, hasDbx, true)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("dbx overrides sql and db: neither appears in map", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"winner" sql:"loser_sql" db:"loser_db"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasWinner := m["winner"]
+		_, hasSql := m["loser_sql"]
+		_, hasDb := m["loser_db"]
+		check.Equal(t, hasWinner, true)
+		check.Equal(t, hasSql, false)
+		check.Equal(t, hasDb, false)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("sql overrides db: db value absent from map", func(t *testing.T) {
+		type row struct {
+			F int `sql:"winner" db:"loser_db"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasWinner := m["winner"]
+		_, hasDb := m["loser_db"]
+		check.Equal(t, hasWinner, true)
+		check.Equal(t, hasDb, false)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("db only", func(t *testing.T) {
+		type row struct {
+			F int `db:"db_name"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasDb := m["db_name"]
+		check.Equal(t, hasDb, true)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("no tags: lowercase field name is the key", func(t *testing.T) {
+		type row struct {
+			MyField int
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasLower := m["myfield"]
+		_, hasMixed := m["MyField"]
+		check.Equal(t, hasLower, true)
+		check.Equal(t, hasMixed, false)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("empty dbx falls back to sql", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"" sql:"sql_name"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasSql := m["sql_name"]
+		check.Equal(t, hasSql, true)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("empty dbx and sql fall back to db", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"" sql:"" db:"db_name"`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasDb := m["db_name"]
+		check.Equal(t, hasDb, true)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("all tags empty: falls back to lowercase field name", func(t *testing.T) {
+		type row struct {
+			MyField int `dbx:"" sql:"" db:""`
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasLower := m["myfield"]
+		check.Equal(t, hasLower, true)
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("empty struct returns empty map", func(t *testing.T) {
+		type row struct{}
+		m := parseStructFields(reflect.TypeFor[row]())
+		check.Equal(t, len(m), 0)
+	})
+
+	t.Run("only unexported fields returns empty map", func(t *testing.T) {
+		type row struct {
+			a int    //nolint
+			b string //nolint
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		check.Equal(t, len(m), 0)
+	})
+
+	t.Run("tagged column shadows lowercase fallback of same-named field", func(t *testing.T) {
+		// Foo is tagged "bar"; Bar has no tags so its lowercase fallback is also "bar".
+		// The tagged field wins: "bar" maps to Foo (field index 0); Bar is unreachable.
+		type row struct {
+			Foo int `dbx:"bar"`
+			Bar int
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		idx, hasBar := m["bar"]
+		check.Equal(t, hasBar, true)
+		check.Equal(t, idx[0], 0) // points to Foo, not Bar
+		check.Equal(t, len(m), 1)
+	})
+
+	t.Run("mixed: tagged and untagged fields coexist", func(t *testing.T) {
+		type row struct {
+			ID    int     `dbx:"id"`
+			Name  string  `sql:"name"`
+			Value float64 `db:"value"`
+			Count int
+		}
+		m := parseStructFields(reflect.TypeFor[row]())
+		_, hasID := m["id"]
+		_, hasName := m["name"]
+		_, hasValue := m["value"]
+		_, hasCount := m["count"]
+		check.Equal(t, hasID, true)
+		check.Equal(t, hasName, true)
+		check.Equal(t, hasValue, true)
+		check.Equal(t, hasCount, true)
+		check.Equal(t, len(m), 4)
+	})
+}
+
+// ---- field mapping scan integration -----------------------------------------
+
+// TestScan_fieldMappingEdgeCases tests the full scan path for field-mapping edge
+// cases: empty tag fallbacks, lowercase fallback, and column-name shadowing.
+func TestScan_fieldMappingEdgeCases(t *testing.T) {
+	t.Run("dbx tag: field reachable via dbx column name", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"dbx_col" sql:"sql_col" db:"db_col"`
+		}
+		s := mockScanner{values: []any{42}}
+		v, err := scanOnce[row](&s, []string{"dbx_col"})
+		assert.NotError(t, err)
+		check.Equal(t, v.F, 42)
+	})
+
+	t.Run("dbx tag: sql column name is not addressable", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"dbx_col" sql:"sql_col" db:"db_col"`
+		}
+		_, err := scanOnce[row](nil, []string{"sql_col"})
+		check.ErrorIs(t, err, errNoStructField)
+	})
+
+	t.Run("dbx tag: db column name is not addressable", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"dbx_col" sql:"sql_col" db:"db_col"`
+		}
+		_, err := scanOnce[row](nil, []string{"db_col"})
+		check.ErrorIs(t, err, errNoStructField)
+	})
+
+	t.Run("lowercase fallback: scan succeeds via lowercase field name", func(t *testing.T) {
+		type row struct {
+			MyValue int
+		}
+		s := mockScanner{values: []any{99}}
+		v, err := scanOnce[row](&s, []string{"myvalue"})
+		assert.NotError(t, err)
+		check.Equal(t, v.MyValue, 99)
+	})
+
+	t.Run("lowercase fallback: original mixed-case name is not addressable", func(t *testing.T) {
+		type row struct {
+			MyValue int
+		}
+		_, err := scanOnce[row](nil, []string{"MyValue"})
+		check.ErrorIs(t, err, errNoStructField)
+	})
+
+	t.Run("lowercase fallback with noCache path", func(t *testing.T) {
+		type row struct {
+			SomeField string
+		}
+		s := mockScanner{values: []any{"hello"}}
+		v, err := scanWith[row](&s, []string{"somefield"}, true)
+		assert.NotError(t, err)
+		check.Equal(t, v.SomeField, "hello")
+	})
+
+	t.Run("empty dbx falls back to sql for scan", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"" sql:"sql_name"`
+		}
+		s := mockScanner{values: []any{7}}
+		v, err := scanOnce[row](&s, []string{"sql_name"})
+		assert.NotError(t, err)
+		check.Equal(t, v.F, 7)
+	})
+
+	t.Run("empty dbx and sql fall back to db for scan", func(t *testing.T) {
+		type row struct {
+			F int `dbx:"" sql:"" db:"db_name"`
+		}
+		s := mockScanner{values: []any{3}}
+		v, err := scanOnce[row](&s, []string{"db_name"})
+		assert.NotError(t, err)
+		check.Equal(t, v.F, 3)
+	})
+
+	t.Run("all empty tags fall back to lowercase for scan", func(t *testing.T) {
+		type row struct {
+			Quantity int `dbx:"" sql:"" db:""`
+		}
+		s := mockScanner{values: []any{5}}
+		v, err := scanOnce[row](&s, []string{"quantity"})
+		assert.NotError(t, err)
+		check.Equal(t, v.Quantity, 5)
+	})
+
+	t.Run("tagged column shadows lowercase of same-named field: tag wins", func(t *testing.T) {
+		// Foo is tagged "bar"; Bar has no tags so its lowercase fallback is also "bar".
+		// Scanning "bar" fills Foo; Bar is unreachable and stays zero.
+		type row struct {
+			Foo int `dbx:"bar"`
+			Bar int
+		}
+		s := mockScanner{values: []any{11}}
+		v, err := scanOnce[row](&s, []string{"bar"})
+		assert.NotError(t, err)
+		check.Equal(t, v.Foo, 11)
+		check.Equal(t, v.Bar, 0)
+	})
+
+	t.Run("tagged column shadows lowercase: shadowed field is not addressable", func(t *testing.T) {
+		// With Foo tagged "bar", Bar's lowercase fallback "bar" is dropped.
+		// There is no column name that reaches Bar.
+		type row struct {
+			Foo int `dbx:"bar"`
+			Bar int
+		}
+		// "bar" maps to Foo (tested above); there is no valid column for Bar.
+		// Attempting to use a name that doesn't exist returns errNoStructField.
+		_, err := scanOnce[row](nil, []string{"baz"})
+		check.ErrorIs(t, err, errNoStructField)
 	})
 }

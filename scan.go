@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/tychoish/fun/adt"
@@ -436,23 +437,36 @@ func seq2StringScannableValueType(t reflect.Type, k reflect.Kind) bool {
 	return isScannableType(valType, valType.Kind())
 }
 
-// parseStructFields parses the struct type t and returns a map of column tag names to
-// field index paths. Embedded struct fields are included via reflect.VisibleFields.
+// parseStructFields parses the struct type t and returns a map of column name to
+// field index path. Unexported fields are skipped. For each exported field the
+// column name is resolved in priority order: the `dbx` tag, then `sql`, then
+// `db`; if none of those are present the lowercase field name is used as a
+// fallback. Embedded struct fields are included via reflect.VisibleFields.
 func parseStructFields(t reflect.Type) map[string][]int {
 	fields := reflect.VisibleFields(t)
 	indexes := make(map[string][]int, len(fields))
-	for _, field := range fields {
-		if !field.IsExported() {
+	missing := make(map[string][]int, len(fields))
+COLUMNS:
+	for field := range irt.Keep(irt.Slice(fields), isExported) {
+		for tag := range irt.Args("dbx", "sql", "db") {
+			if column, ok := field.Tag.Lookup(tag); ok && column != "" {
+				indexes[column] = field.Index
+				continue COLUMNS
+			}
+		}
+		missing[strings.ToLower(field.Name)] = field.Index
+	}
+
+	for name, idxs := range missing {
+		if _, ok := indexes[name]; ok {
 			continue
 		}
-		if column, ok := field.Tag.Lookup("sql"); ok && column != "" {
-			indexes[column] = field.Index
-		} else if column, ok = field.Tag.Lookup("db"); ok && column != "" {
-			indexes[column] = field.Index
-		}
+		indexes[name] = idxs
 	}
 	return indexes
 }
+
+func isExported(field reflect.StructField) bool { return field.IsExported() }
 
 // parseStruct is like parseStructFields but caches results in the global cache.
 func parseStruct(t reflect.Type) map[string][]int {

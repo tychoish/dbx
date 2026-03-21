@@ -8,7 +8,10 @@ The changes are:
 
 - I wanted to use tools from my own [fun] package, for testing and for the string builder, some internals, and its iterator library (`irt`).
 
-- I needed to be able to configure the struct tag used for interoperability, in the row iterator.
+- I needed to be able to configure the struct tag used for interoperability with the row iterator, and I to expand the support for arbitrary types.
+
+- I wanted more control over the string building inside of the query
+  builder to improve buffer allocation and pooling
 
 ## High Level Features:
 

@@ -3,6 +3,7 @@ package dbx
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"iter"
 	"reflect"
 )
@@ -66,17 +67,11 @@ func (c *cursor[T]) findOne(ctx context.Context, q QueryFunc, query string, args
 	}
 
 	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return zero, err
-		}
-		return zero, sql.ErrNoRows
+		return zero, errors.Join(sql.ErrNoRows, rows.Err())
 	}
 
 	t, err := c.scan(rows, columns)
 	if err != nil {
-		return zero, err
-	}
-	if err := rows.Err(); err != nil {
 		return zero, err
 	}
 
@@ -88,11 +83,11 @@ func (c *cursor[T]) scan(s scanner, columns []string) (zero T, _ error) {
 		return zero, errNoColumns
 	}
 
-	var t T
-
 	if err := c.initPlan(columns); err != nil {
 		return zero, err
 	}
+
+	var t T
 
 	rp := c.resolveRowPlan(&t)
 
