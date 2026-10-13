@@ -24,6 +24,8 @@ func TestGetSlice(t *testing.T) {
 	byt1 := []byte("hello")
 	byt2 := []byte("world")
 
+	type customInt int
+
 	t.Run("SupportedTypes", func(t *testing.T) {
 		// Pre-create pointers so input and expected reference the same values.
 		pStr1, pStr2 := ptr("a"), ptr("b")
@@ -83,6 +85,7 @@ func TestGetSlice(t *testing.T) {
 			{"[]*float64", []*float64{pF64}, []any{pF64}},
 			{"[]*time.Time", []*time.Time{pTime}, []any{pTime}},
 			{"[]*[]byte", []*[]byte{pByt}, []any{pByt}},
+			{"custom slice", []customInt{10, 20}, []any{customInt(10), customInt(20)}},
 		}
 
 		for _, tt := range tests {
@@ -113,12 +116,24 @@ func TestGetSlice(t *testing.T) {
 			[]time.Time{},
 			[]*string{},
 			[][]byte{},
+			[]customInt{},
 		}
 		for _, arg := range empties {
 			got, ok := collectGetSlice(arg)
 			assert.True(t, ok)
 			assert.Equal(t, len(got), 0)
 		}
+	})
+
+	t.Run("EarlyBreak", func(t *testing.T) {
+		seq := getSlice([]customInt{1, 2, 3})
+		assert.True(t, seq != nil)
+		var count int
+		for range seq {
+			count++
+			break
+		}
+		assert.Equal(t, count, 1)
 	})
 
 	t.Run("UnsupportedTypes", func(t *testing.T) {
