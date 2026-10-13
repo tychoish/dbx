@@ -13,12 +13,12 @@ import (
 type QueryFunc func(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 
 // Query executes a query that returns rows, scans each row into a T,
-// and returns an iterator over the Ts.  If an error occurs, the
+// and returns an iterator over the Ts. If an error occurs, the
 // iterator yields it as the second value, and the caller should then
-// stop the iteration.  [Queryer] can be either [sql.DB] or [sql.Tx],
-// the rest of the arguments are passed directly to
-// [Queryer.QueryContext].  Query fully manages the lifecycle of the
-// [sql.Rows] returned by [Queryer.QueryContext], so the caller does
+// stop the iteration. [QueryFunc] is typically provided by passing
+// 'db.QueryContext' or 'tx.QueryContext' from a [sql.DB] or [sql.Tx],
+// with the rest of the arguments passed directly to it. Query fully
+// manages the lifecycle of the [sql.Rows] returned, so the caller does
 // not have to.
 //
 // The following Ts are supported:
@@ -30,16 +30,18 @@ type QueryFunc func(ctx context.Context, query string, args ...any) (*sql.Rows, 
 //   - time.Time
 //   - [sql.Scanner] (implemented by [sql.Null] types)
 //   - any struct
+//   - pointers to any supported type (e.g. *int, *struct, etc.)
+//   - []any, map[string]any, []irt.KV[string, any], and iter.Seq2[string, any]
+//   - typed slices ([]V), typed maps (map[string]V), typed KV slices ([]irt.KV[string, V]),
+//     and typed iterators (iter.Seq2[string, V]) where V is directly scannable
 //
-// See the [sql.Rows.Scan] documentation for the scanning rules.  If
-// the query has multiple columns, T must be a struct, other types can
-// only be used for single-column queries.  For struct Ts, the column
-// name for each field is resolved in priority order: the `dbx` tag,
+// See the [sql.Rows.Scan] documentation for the scanning rules. If
+// the query has multiple columns, T must be a struct or one of the
+// supported collection types (slice, map, KV slice, seq2); scalar
+// types can only be used for single-column queries. For struct Ts, the
+// column name for each field is resolved in priority order: the `dbx` tag,
 // then the `sql` tag, then the `db` tag, and finally the lowercase
-// field name as a fallback.  Unexported fields are always ignored.
-//
-// If the caller prefers the result to be a slice rather than an
-// iterator, Query can be combined with [Collect].
+// field name as a fallback. Unexported fields are always ignored.
 func Query[T any](ctx context.Context, q QueryFunc, query string, args ...any) iter.Seq2[T, error] {
 	var cc cursor[T]
 	return cc.findMany(ctx, q, query, args)
@@ -51,7 +53,7 @@ func Query[T any](ctx context.Context, q QueryFunc, query string, args ...any) i
 //
 // Like [sql.DB.QueryRow], QueryRow returns [sql.ErrNoRows] if the
 // query selects no rows, otherwise it scans the first row and
-// discards the rest.  See the [Query] documentation for details on
+// discards the rest. See the [Query] documentation for details on
 // supported Ts.
 func QueryRow[T any](ctx context.Context, q QueryFunc, query string, args ...any) (T, error) {
 	var cc cursor[T]

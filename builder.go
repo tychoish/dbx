@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"reflect"
 	"time"
 
 	"github.com/tychoish/fun/dt"
@@ -13,8 +14,8 @@ import (
 )
 
 // Builder is a string-oriented query builder to produce well formed
-// parameterized queries without a new DSL, or mess string building by
-// hand. Use either directly, using he With, WithSQL, and WithParams, or
+// parameterized queries without a new DSL, or messy string building by
+// hand. Use either directly, using the With, WithSQL, and WithParams, or
 // with the standalone SQL() helper.
 //
 // dbx.SQL() and Builder.With() work like a SQL-printf, where
@@ -43,7 +44,7 @@ import (
 //
 // If a special verb includes the "+" flag, it automatically expands
 // to multiple placeholders.  For example, given the verb "%+?" and
-// the argument []int{1, 2, 3}, the builder will produce"?, ?, ?" to the query
+// the argument []int{1, 2, 3}, the builder will produce "?, ?, ?" to the query
 // and appends 1, 2, and 3 to the arguments.  You may want to use this
 // flag to build "WHERE IN (...)" clauses.
 //
@@ -89,6 +90,10 @@ func (b *Builder) WhenParams(cond bool, args ...any) *Builder {
 func (b *Builder) Build() (query string, args []any) {
 	mut := strut.MakeMutable(b.sql.Len() + 4*b.args.Len())
 	defer mut.Release()
+
+	b.qb.args = make([]any, 0, b.args.Len())
+	b.qb.counter = 0
+	b.qb.placeholder = 0
 
 	fmt.Fprintf(mut, b.sql.String(), irt.Collect(irt.Any(b.args.IteratorFront()), b.args.Len())...)
 	return mut.String(), b.qb.args
@@ -233,6 +238,16 @@ func getSlice(arg any) iter.Seq[any] {
 	case []*[]byte:
 		return irt.Any(irt.Slice(data))
 	default:
+		val := reflect.ValueOf(arg)
+		if val.IsValid() && val.Kind() == reflect.Slice {
+			return func(yield func(any) bool) {
+				for i := range val.Len() {
+					if !yield(val.Index(i).Interface()) {
+						return
+					}
+				}
+			}
+		}
 		return nil
 	}
 }

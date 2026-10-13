@@ -59,6 +59,14 @@ func TestBuilder_sliceArgument(t *testing.T) {
 	assert.EqualItems(t, args, []any{1, 2, 3})
 }
 
+func TestBuilder_customSliceType(t *testing.T) {
+	type myID int
+	format := "SELECT * FROM tbl WHERE foo IN (%+$)"
+	query, args := queries.SQL(format, []myID{10, 20, 30})
+	assert.Equal(t, query, "SELECT * FROM tbl WHERE foo IN ($1, $2, $3)")
+	assert.EqualItems(t, args, []any{myID(10), myID(20), myID(30)})
+}
+
 func TestBuilder_WithSQL(t *testing.T) {
 	var qb queries.Builder
 	qb.WithSQL("SELECT * FROM tbl", " ORDER BY id")

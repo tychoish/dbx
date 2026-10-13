@@ -133,6 +133,11 @@ func Test_scan(t *testing.T) {
 		v, err := scan[sql.Null[string]](&s, columns)
 		assert.NotError(t, err)
 		check.Equal(t, v, sql.Null[string]{V: "test", Valid: true})
+
+		s2 := mockScanner{values: []any{"test"}}
+		v2, err := scan[*sql.NullString](&s2, columns)
+		assert.NotError(t, err)
+		check.Equal(t, *v2, sql.NullString{String: "test", Valid: true})
 	})
 
 	t.Run("slice of any", func(t *testing.T) {

@@ -354,10 +354,11 @@ func mappingTypedSeq2(typ reflect.Type, columns []string) *rowPlan {
 }
 
 func isScannableType(t reflect.Type, k reflect.Kind) bool {
-	return (k >= reflect.Bool && k <= reflect.Float64) ||
+	return k != reflect.Pointer && ((k >= reflect.Bool && k <= reflect.Float64) ||
 		k == reflect.String ||
 		t == reflect.TypeFor[time.Time]() ||
-		reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]())
+		t.Implements(reflect.TypeFor[sql.Scanner]()) ||
+		reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]()))
 }
 
 // scannableStringMapElem reports whether t is a map[string]V where V is directly scannable.

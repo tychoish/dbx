@@ -41,88 +41,86 @@ var (
 )
 
 type testDriver struct {
-	tb     testing.TB
-	driver Driver
+	tb testing.TB
+	Driver
 }
 
 // Open implements [driver.Driver].
-func (d testDriver) Open(string) (driver.Conn, error) { return d, nil }
+func (d testDriver) Open(name string) (driver.Conn, error) { return d, nil }
 
 // Prepare implements [driver.Conn].
-func (testDriver) Prepare(string) (driver.Stmt, error) { panic("unimplemented") } // TODO: implement [driver.ConnPrepareContext]
+func (d testDriver) Prepare(query string) (driver.Stmt, error) { panic("use ExecContext") }
 
 // Close implements [driver.Conn].
-func (testDriver) Close() error { return nil }
+func (d testDriver) Close() error { return nil }
 
 // Begin implements [driver.Conn].
-func (testDriver) Begin() (driver.Tx, error) { panic("unreachable") } // BeginTx always takes precedence over Begin.
+func (d testDriver) Begin() (driver.Tx, error) { panic("use BeginTx") }
 
 // BeginTx implements [driver.ConnBeginTx].
-func (d testDriver) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) { return d, nil }
+func (d testDriver) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return d, nil
+}
 
 // Commit implements [driver.Tx].
-func (testDriver) Commit() error { return nil }
+func (d testDriver) Commit() error { return nil }
 
 // Rollback implements [driver.Tx].
-func (testDriver) Rollback() error { return nil }
+func (d testDriver) Rollback() error { return nil }
 
 // ExecContext implements [driver.ExecerContext].
-func (d testDriver) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if d.driver.ExecContext == nil {
-		panic("queriestest: Driver.ExecContext is not set")
+func (d testDriver) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if d.Driver.ExecContext == nil {
+		panic("ExecContext must be set")
 	}
-	return d.driver.ExecContext(d.tb, query, namedToAny(args))
+	return d.Driver.ExecContext(d.tb, query, namedToAny(args))
 }
 
 // QueryContext implements [driver.QueryerContext].
-func (d testDriver) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if d.driver.QueryContext == nil {
-		panic("queriestest: Driver.QueryContext is not set")
+func (d testDriver) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if d.Driver.QueryContext == nil {
+		panic("QueryContext must be set")
 	}
-	return d.driver.QueryContext(d.tb, query, namedToAny(args))
+	return d.Driver.QueryContext(d.tb, query, namedToAny(args))
 }
 
-func namedToAny(values []driver.NamedValue) []any {
-	args := make([]any, len(values))
-	for i, value := range values {
-		args[i] = value.Value
+func namedToAny(named []driver.NamedValue) []any {
+	args := make([]any, len(named))
+	for i, arg := range named {
+		args[i] = arg.Value
 	}
 	return args
 }
 
-var _ driver.Result = testResult{}
-
-type testResult struct {
-	lastInsertID int64
+type result struct {
+	lastInsertId int64
 	rowsAffected int64
 }
 
-// NewResult creates a test [driver.Result] from the given values.
-func NewResult(lastInsertID, rowsAffected int64) driver.Result {
-	return testResult{lastInsertID, rowsAffected}
+// NewResult creates a [driver.Result] for use in tests.
+func NewResult(lastInsertId, rowsAffected int64) driver.Result {
+	return result{lastInsertId, rowsAffected}
 }
 
 // LastInsertId implements [driver.Result].
-func (r testResult) LastInsertId() (int64, error) { return r.lastInsertID, nil }
+func (r result) LastInsertId() (int64, error) { return r.lastInsertId, nil }
 
 // RowsAffected implements [driver.Result].
-func (r testResult) RowsAffected() (int64, error) { return r.rowsAffected, nil }
+func (r result) RowsAffected() (int64, error) { return r.rowsAffected, nil }
 
-var _ driver.Rows = new(Rows)
-
-// Rows is a test implementation of [driver.Rows].
+// Rows is an implementation of [driver.Rows] for use in tests.
 type Rows struct {
 	columns []string
-	values  [][]any
+	values  [][]driver.Value
 }
 
-// NewRows creates [Rows] from the given columns.
+// NewRows creates a [Rows] with the given column names.
 func NewRows(columns ...string) *Rows {
 	return &Rows{columns: columns}
 }
 
-// Add adds another row to the [Rows].
-func (r *Rows) Add(values ...any) *Rows {
+// Add appends a row of values to the [Rows].
+func (r *Rows) Add(values ...driver.Value) *Rows {
 	r.values = append(r.values, values)
 	return r
 }
@@ -138,7 +136,7 @@ func (r *Rows) Next(values []driver.Value) error {
 	if len(r.values) == 0 {
 		return io.EOF
 	}
-	for i := range values {
+	for i := range min(len(values), len(r.values[0])) {
 		values[i] = r.values[0][i]
 	}
 	r.values = slices.Delete(r.values, 0, 1)
