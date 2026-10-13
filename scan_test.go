@@ -370,10 +370,10 @@ func TestScan_struct(t *testing.T) {
 func TestScan_structTagPrecedence(t *testing.T) {
 	type row struct {
 		AllTags    string `dbx:"dbx_col" sql:"sql_col" db:"db_col"` // dbx wins
-		SqlAndDb   string `sql:"sql_col2" db:"db_col2"`              // sql wins
-		DbOnly     string `db:"db_col3"`                             // db wins
-		NoTags     string                                            // fallback: "notags"
-		unexported string                                            //nolint // never mapped
+		SqlAndDb   string `sql:"sql_col2" db:"db_col2"`             // sql wins
+		DbOnly     string `db:"db_col3"`                            // db wins
+		NoTags     string // fallback: "notags"
+		unexported string //nolint // never mapped
 	}
 
 	t.Run("correct column names used", func(t *testing.T) {
@@ -409,9 +409,9 @@ func TestScan_sliceOfAny(t *testing.T) {
 		v, err := scanOnce[[]any](&s, []string{"a", "b", "c"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 3)
-			check.Equal(t, v[0], 1)
-			check.Equal(t, v[1], "two")
-			check.Equal(t, v[2], true)
+		check.Equal(t, v[0], 1)
+		check.Equal(t, v[1], "two")
+		check.Equal(t, v[2], true)
 	})
 	t.Run("independent slices per row", func(t *testing.T) {
 		cc := cursor[[]any]{}
@@ -437,8 +437,8 @@ func TestScan_mapStringAny(t *testing.T) {
 		v, err := scanOnce[map[string]any](&s, []string{"id", "name"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v["id"], 42)
-			check.Equal(t, v["name"], "world")
+		check.Equal(t, v["id"], 42)
+		check.Equal(t, v["name"], "world")
 	})
 	t.Run("independent maps per row", func(t *testing.T) {
 		cc := cursor[map[string]any]{}
@@ -462,10 +462,10 @@ func TestScan_kvStringAny(t *testing.T) {
 	v, err := scanOnce[[]irt.KV[string, any]](&s, []string{"id", "name"})
 	assert.NotError(t, err)
 	check.Equal(t, len(v), 2)
-		check.Equal(t, v[0].Key, "id")
-		check.Equal(t, v[0].Value, 42)
-		check.Equal(t, v[1].Key, "name")
-		check.Equal(t, v[1].Value, "world")
+	check.Equal(t, v[0].Key, "id")
+	check.Equal(t, v[0].Value, 42)
+	check.Equal(t, v[1].Key, "name")
+	check.Equal(t, v[1].Value, "world")
 }
 
 func TestScan_seq2StringAny(t *testing.T) {
@@ -474,8 +474,8 @@ func TestScan_seq2StringAny(t *testing.T) {
 	assert.NotError(t, err)
 	m := irt.Collect2(v)
 	check.Equal(t, len(m), 2)
-		check.Equal(t, m["id"], 42)
-		check.Equal(t, m["name"], "world")
+	check.Equal(t, m["id"], 42)
+	check.Equal(t, m["name"], "world")
 }
 
 func TestScan_typedSlice(t *testing.T) {
@@ -484,17 +484,17 @@ func TestScan_typedSlice(t *testing.T) {
 		v, err := scanOnce[[]string](&s, []string{"x", "y", "z"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 3)
-			check.Equal(t, v[0], "a")
-			check.Equal(t, v[1], "b")
-			check.Equal(t, v[2], "c")
+		check.Equal(t, v[0], "a")
+		check.Equal(t, v[1], "b")
+		check.Equal(t, v[2], "c")
 	})
 	t.Run("[]int", func(t *testing.T) {
 		s := mockScanner{values: []any{10, 20}}
 		v, err := scanOnce[[]int](&s, []string{"p", "q"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v[0], 10)
-			check.Equal(t, v[1], 20)
+		check.Equal(t, v[0], 10)
+		check.Equal(t, v[1], 20)
 	})
 	t.Run("independent slices per row", func(t *testing.T) {
 		cc := cursor[[]string]{}
@@ -519,16 +519,16 @@ func TestScan_typedMap(t *testing.T) {
 		v, err := scanOnce[map[string]string](&s, []string{"first", "last"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v["first"], "alice")
-			check.Equal(t, v["last"], "smith")
+		check.Equal(t, v["first"], "alice")
+		check.Equal(t, v["last"], "smith")
 	})
 	t.Run("map[string]int", func(t *testing.T) {
 		s := mockScanner{values: []any{10, 20}}
 		v, err := scanOnce[map[string]int](&s, []string{"a", "b"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v["a"], 10)
-			check.Equal(t, v["b"], 20)
+		check.Equal(t, v["a"], 10)
+		check.Equal(t, v["b"], 20)
 	})
 	t.Run("independent maps per row", func(t *testing.T) {
 		cc := cursor[map[string]string]{}
@@ -553,20 +553,20 @@ func TestScan_typedKVSlice(t *testing.T) {
 		v, err := scanOnce[[]irt.KV[string, string]](&s, []string{"first", "last"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v[0].Key, "first")
-			check.Equal(t, v[0].Value, "alice")
-			check.Equal(t, v[1].Key, "last")
-			check.Equal(t, v[1].Value, "bob")
+		check.Equal(t, v[0].Key, "first")
+		check.Equal(t, v[0].Value, "alice")
+		check.Equal(t, v[1].Key, "last")
+		check.Equal(t, v[1].Value, "bob")
 	})
 	t.Run("[]irt.KV[string,int]", func(t *testing.T) {
 		s := mockScanner{values: []any{1, 2}}
 		v, err := scanOnce[[]irt.KV[string, int]](&s, []string{"a", "b"})
 		assert.NotError(t, err)
 		check.Equal(t, len(v), 2)
-			check.Equal(t, v[0].Key, "a")
-			check.Equal(t, v[0].Value, 1)
-			check.Equal(t, v[1].Key, "b")
-			check.Equal(t, v[1].Value, 2)
+		check.Equal(t, v[0].Key, "a")
+		check.Equal(t, v[0].Value, 1)
+		check.Equal(t, v[1].Key, "b")
+		check.Equal(t, v[1].Value, 2)
 	})
 	t.Run("independent slices per row", func(t *testing.T) {
 		cc := cursor[[]irt.KV[string, int]]{}
@@ -592,8 +592,8 @@ func TestScan_typedSeq2(t *testing.T) {
 		assert.NotError(t, err)
 		m := irt.Collect2(v)
 		check.Equal(t, len(m), 2)
-			check.Equal(t, m["first"], "alice")
-			check.Equal(t, m["last"], "bob")
+		check.Equal(t, m["first"], "alice")
+		check.Equal(t, m["last"], "bob")
 	})
 	t.Run("iter.Seq2[string,int]", func(t *testing.T) {
 		s := mockScanner{values: []any{10, 20}}
@@ -601,8 +601,8 @@ func TestScan_typedSeq2(t *testing.T) {
 		assert.NotError(t, err)
 		m := irt.Collect2(v)
 		check.Equal(t, len(m), 2)
-			check.Equal(t, m["x"], 10)
-			check.Equal(t, m["y"], 20)
+		check.Equal(t, m["x"], 10)
+		check.Equal(t, m["y"], 20)
 	})
 	t.Run("early break stops iteration", func(t *testing.T) {
 		// Exercises the `break` in mappingTypedSeq2 when the consumer returns false.
@@ -640,7 +640,9 @@ func TestScan_typedSeq2(t *testing.T) {
 
 func TestScan_planReuse(t *testing.T) {
 	t.Run("plan cached after first scan", func(t *testing.T) {
-		type row struct{ A int `sql:"a"` }
+		type row struct {
+			A int `sql:"a"`
+		}
 		cc := cursor[row]{}
 		check.Equal(t, cc.plan == nil, true)
 
@@ -816,28 +818,28 @@ func TestScan_pointerToScalar(t *testing.T) {
 		v, err := scanOnce[*int](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, 42)
+		check.Equal(t, *v, 42)
 	})
 	t.Run("*string", func(t *testing.T) {
 		s := mockScanner{values: []any{"hello"}}
 		v, err := scanOnce[*string](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, "hello")
+		check.Equal(t, *v, "hello")
 	})
 	t.Run("*bool", func(t *testing.T) {
 		s := mockScanner{values: []any{true}}
 		v, err := scanOnce[*bool](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, true)
+		check.Equal(t, *v, true)
 	})
 	t.Run("*int64", func(t *testing.T) {
 		s := mockScanner{values: []any{int64(99)}}
 		v, err := scanOnce[*int64](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, int64(99))
+		check.Equal(t, *v, int64(99))
 	})
 	t.Run("*time.Time", func(t *testing.T) {
 		now := time.Now().Truncate(time.Second)
@@ -845,15 +847,15 @@ func TestScan_pointerToScalar(t *testing.T) {
 		v, err := scanOnce[*time.Time](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, now)
+		check.Equal(t, *v, now)
 	})
 	t.Run("**int", func(t *testing.T) {
 		s := mockScanner{values: []any{7}}
 		v, err := scanOnce[**int](&s, col)
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v != nil, true)
-				check.Equal(t, **v, 7)
+		check.Equal(t, *v != nil, true)
+		check.Equal(t, **v, 7)
 	})
 	t.Run("rows are independent", func(t *testing.T) {
 		cc := cursor[*int]{}
@@ -878,8 +880,8 @@ func TestScan_pointerToStruct(t *testing.T) {
 		v, err := scanOnce[*row](&s, []string{"a", "b"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, v.A, 5)
-			check.Equal(t, v.B, "five")
+		check.Equal(t, v.A, 5)
+		check.Equal(t, v.B, "five")
 	})
 	t.Run("rows are independent", func(t *testing.T) {
 		cc := cursor[*row]{}
@@ -894,7 +896,9 @@ func TestScan_pointerToStruct(t *testing.T) {
 		check.Equal(t, r2.A, 2)
 	})
 	t.Run("embedded struct promoted fields", func(t *testing.T) {
-		type inner struct{ C bool `sql:"c"` }
+		type inner struct {
+			C bool `sql:"c"`
+		}
 		type outer struct {
 			inner
 			A int `sql:"a"`
@@ -903,8 +907,8 @@ func TestScan_pointerToStruct(t *testing.T) {
 		v, err := scanOnce[*outer](&s, []string{"a", "c"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, v.A, 3)
-			check.Equal(t, v.C, true)
+		check.Equal(t, v.A, 3)
+		check.Equal(t, v.C, true)
 	})
 }
 
@@ -914,16 +918,16 @@ func TestScan_pointerToSlice(t *testing.T) {
 		v, err := scanOnce[*[]string](&s, []string{"a", "b"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, len(*v), 2)
-			check.Equal(t, (*v)[0], "x")
-			check.Equal(t, (*v)[1], "y")
+		check.Equal(t, len(*v), 2)
+		check.Equal(t, (*v)[0], "x")
+		check.Equal(t, (*v)[1], "y")
 	})
 	t.Run("*[]any", func(t *testing.T) {
 		s := mockScanner{values: []any{1, "two"}}
 		v, err := scanOnce[*[]any](&s, []string{"a", "b"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, len(*v), 2)
+		check.Equal(t, len(*v), 2)
 	})
 	t.Run("rows are independent", func(t *testing.T) {
 		cc := cursor[*[]string]{}
@@ -945,15 +949,15 @@ func TestScan_pointerToMap(t *testing.T) {
 		v, err := scanOnce[*map[string]string](&s, []string{"first", "last"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, (*v)["first"], "alice")
-			check.Equal(t, (*v)["last"], "bob")
+		check.Equal(t, (*v)["first"], "alice")
+		check.Equal(t, (*v)["last"], "bob")
 	})
 	t.Run("*map[string]any", func(t *testing.T) {
 		s := mockScanner{values: []any{42, "world"}}
 		v, err := scanOnce[*map[string]any](&s, []string{"id", "name"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, (*v)["id"], 42)
+		check.Equal(t, (*v)["id"], 42)
 	})
 }
 
@@ -999,7 +1003,7 @@ func TestScan_scannerInterface(t *testing.T) {
 		v, err := scanOnce[*sql.Null[string]](&s, []string{"v"})
 		assert.NotError(t, err)
 		check.Equal(t, v != nil, true)
-			check.Equal(t, *v, sql.Null[string]{V: "world", Valid: true})
+		check.Equal(t, *v, sql.Null[string]{V: "world", Valid: true})
 	})
 }
 

@@ -76,6 +76,125 @@ func TestBuilder_WithParams(t *testing.T) {
 	assert.EqualItems(t, args, []any{42, "test"})
 }
 
+func TestBuilder_When(t *testing.T) {
+	t.Run("true: sql and args appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE 1=1")
+		qb.When(true, " AND foo = %$", 42)
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1 AND foo = $1")
+		assert.EqualItems(t, args, []any{42})
+	})
+	t.Run("false: nothing appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE 1=1")
+		qb.When(false, " AND foo = %$", 42)
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1")
+		assert.Equal(t, len(args), 0)
+	})
+	t.Run("chaining: true then false", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE 1=1")
+		qb.When(true, " AND a = %$", 1).When(false, " AND b = %$", 2).When(true, " AND c = %$", 3)
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1 AND a = $1 AND c = $2")
+		assert.EqualItems(t, args, []any{1, 3})
+	})
+	t.Run("true with multiple args", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE 1=1")
+		qb.When(true, " AND baz = %$ AND qux = %$", "x", "y")
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1 AND baz = $1 AND qux = $2")
+		assert.EqualItems(t, args, []any{"x", "y"})
+	})
+	t.Run("returns builder for chaining", func(t *testing.T) {
+		var qb queries.Builder
+		result := qb.When(true, "SELECT 1")
+		assert.Equal(t, result == &qb, true)
+	})
+}
+
+func TestBuilder_WhenSQL(t *testing.T) {
+	t.Run("true: statements appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl")
+		qb.WhenSQL(true, " ORDER BY id", " DESC")
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl ORDER BY id DESC")
+		assert.Equal(t, len(args), 0)
+	})
+	t.Run("false: nothing appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl")
+		qb.WhenSQL(false, " ORDER BY id")
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl")
+		assert.Equal(t, len(args), 0)
+	})
+	t.Run("chaining: mixed conditions", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE 1=1")
+		qb.WhenSQL(true, " AND active = true").WhenSQL(false, " AND deleted = false").WhenSQL(true, " LIMIT 10")
+		query, _ := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE 1=1 AND active = true LIMIT 10")
+	})
+	t.Run("does not affect args", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE foo = %$")
+		qb.WithParams(99)
+		qb.WhenSQL(true, " ORDER BY id")
+		_, args := qb.Build()
+		assert.EqualItems(t, args, []any{99})
+	})
+	t.Run("returns builder for chaining", func(t *testing.T) {
+		var qb queries.Builder
+		result := qb.WhenSQL(true, "SELECT 1")
+		assert.Equal(t, result == &qb, true)
+	})
+}
+
+func TestBuilder_WhenParams(t *testing.T) {
+	t.Run("true: params appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE foo = %$ AND bar = %$")
+		qb.WhenParams(true, 1, 2)
+		query, args := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE foo = $1 AND bar = $2")
+		assert.EqualItems(t, args, []any{1, 2})
+	})
+	t.Run("false: params not appended", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE foo = %$")
+		qb.WithParams(1)
+		qb.WhenParams(false, 99)
+		_, args := qb.Build()
+		assert.EqualItems(t, args, []any{1})
+	})
+	t.Run("chaining: conditional params compose with unconditional", func(t *testing.T) {
+		var qb queries.Builder
+		qb.WithSQL("SELECT * FROM tbl WHERE a = %$ AND b = %$ AND c = %$")
+		qb.WithParams(1)
+		qb.WhenParams(false, 2)
+		qb.WithParams(3)
+		_, args := qb.Build()
+		assert.EqualItems(t, args, []any{1, 3})
+	})
+	t.Run("does not affect sql", func(t *testing.T) {
+		var qb queries.Builder
+		qb.With("SELECT * FROM tbl WHERE a = %$ AND b = %$")
+		qb.WhenParams(true, 1, 2)
+		query, _ := qb.Build()
+		assert.Equal(t, query, "SELECT * FROM tbl WHERE a = $1 AND b = $2")
+	})
+	t.Run("returns builder for chaining", func(t *testing.T) {
+		var qb queries.Builder
+		result := qb.WhenParams(true, 1)
+		assert.Equal(t, result == &qb, true)
+	})
+}
+
 func TestBuilder_badQuery(t *testing.T) {
 	tests := map[string]struct {
 		format string

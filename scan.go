@@ -331,7 +331,7 @@ func mappingTypedKVSlice(typ reflect.Type, columns []string) *rowPlan {
 // iterator is lazy and captures the pointers directly.
 // The value type V is derived from the yield function's second parameter.
 func mappingTypedSeq2(typ reflect.Type, columns []string) *rowPlan {
-	valType := typ.In(0).In(1) // Seq2[K,V] = func(func(K,V) bool); yield.In(1) = V
+	valType := typ.In(0).In(1)
 	keys := make([]reflect.Value, len(columns))
 	for i, col := range columns {
 		keys[i] = reflect.ValueOf(col)
@@ -447,7 +447,7 @@ func parseStructFields(t reflect.Type) map[string][]int {
 	indexes := make(map[string][]int, len(fields))
 	missing := make(map[string][]int, len(fields))
 COLUMNS:
-	for field := range irt.Keep(irt.Slice(fields), isExported) {
+	for field := range irt.Keep(irt.Ptrs(irt.Slice(fields)), isExported) {
 		for tag := range irt.Args("dbx", "sql", "db") {
 			if column, ok := field.Tag.Lookup(tag); ok && column != "" {
 				indexes[column] = field.Index
@@ -466,7 +466,7 @@ COLUMNS:
 	return indexes
 }
 
-func isExported(field reflect.StructField) bool { return field.IsExported() }
+func isExported(field *reflect.StructField) bool { return field.IsExported() }
 
 // parseStruct is like parseStructFields but caches results in the global cache.
 func parseStruct(t reflect.Type) map[string][]int {
