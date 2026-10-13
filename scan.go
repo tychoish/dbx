@@ -24,12 +24,6 @@ const (
 	errUnsupportedT  ers.Error = "queries: unsupported T"
 )
 
-var (
-	reflectTypeTime    = reflect.TypeFor[time.Time]()
-	reflectTypeScanner = reflect.TypeFor[sql.Scanner]()
-	reflectTypeString  = reflect.TypeFor[string]()
-)
-
 var cache = &adt.SyncMap[reflect.Type, map[string][]int]{}
 
 // rowPlan carries the per-row scan targets and optional per-row steps.
@@ -104,13 +98,13 @@ func (c cursor[T]) buildReflectMapping(typ reflect.Type, k reflect.Kind, columns
 		return rp, nil
 	case k == reflect.Struct:
 		return c.buildStructMapping(typ, columns)
-	case k == reflect.Slice && isSliceOfAny(typ):
+	case typ == reflect.TypeFor[[]any]():
 		return mappingSliceOfAny(columns), nil
-	case k == reflect.Map && isStringToAnyMap(typ):
+	case typ == reflect.TypeFor[map[string]any]():
 		return mappingMapStringAny(columns), nil
-	case k == reflect.Slice && isKVStringAnySlice(typ):
+	case typ == reflect.TypeFor[[]irt.KV[string, any]]():
 		return mappingKVStringAny(columns), nil
-	case k == reflect.Func && isSeq2StringAny(typ):
+	case typ == reflect.TypeFor[iter.Seq2[string, any]]():
 		return mappingSeq2StringAny(columns), nil
 	case scannableSliceElem(typ, k):
 		return mappingTypedSlice(typ, columns), nil
@@ -359,28 +353,16 @@ func mappingTypedSeq2(typ reflect.Type, columns []string) *rowPlan {
 	}
 }
 
-var (
-	reflectTypeSliceOfAny       = reflect.TypeFor[[]any]()
-	reflectTypeMapStringAny     = reflect.TypeFor[map[string]any]()
-	reflectTypeKVStringAnySlice = reflect.TypeFor[[]irt.KV[string, any]]()
-	reflectTypeSeq2StringAny    = reflect.TypeFor[iter.Seq2[string, any]]()
-)
-
-func isSliceOfAny(t reflect.Type) bool       { return t == reflectTypeSliceOfAny }
-func isStringToAnyMap(t reflect.Type) bool   { return t == reflectTypeMapStringAny }
-func isKVStringAnySlice(t reflect.Type) bool { return t == reflectTypeKVStringAnySlice }
-func isSeq2StringAny(t reflect.Type) bool    { return t == reflectTypeSeq2StringAny }
-
 func isScannableType(t reflect.Type, k reflect.Kind) bool {
 	return (k >= reflect.Bool && k <= reflect.Float64) ||
 		k == reflect.String ||
-		t == reflectTypeTime ||
-		reflect.PointerTo(t).Implements(reflectTypeScanner)
+		t == reflect.TypeFor[time.Time]() ||
+		reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]())
 }
 
 // scannableStringMapElem reports whether t is a map[string]V where V is directly scannable.
 func scannableStringMapElem(t reflect.Type, k reflect.Kind) bool {
-	if k != reflect.Map || t.Key() != reflectTypeString {
+	if k != reflect.Map || t.Key() != reflect.TypeFor[string]() {
 		return false
 	}
 	elem := t.Elem()
@@ -398,7 +380,7 @@ func scannableSliceElem(t reflect.Type, k reflect.Kind) bool {
 
 // scannableKVStringSliceElem reports whether t is []irt.KV[string, V] where V is
 // directly scannable (non-interface).
-// The []irt.KV[string, any] case is handled separately by isKVStringAnySlice.
+// The []irt.KV[string, any] case is handled separately in buildReflectMapping.
 func scannableKVStringSliceElem(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Slice {
 		return false
@@ -409,7 +391,7 @@ func scannableKVStringSliceElem(t reflect.Type, k reflect.Kind) bool {
 	}
 	keyField := elem.Field(0)
 	valField := elem.Field(1)
-	if keyField.Name != "Key" || keyField.Type != reflectTypeString {
+	if keyField.Name != "Key" || keyField.Type != reflect.TypeFor[string]() {
 		return false
 	}
 	if valField.Name != "Value" {
@@ -421,7 +403,7 @@ func scannableKVStringSliceElem(t reflect.Type, k reflect.Kind) bool {
 
 // seq2StringScannableValueType reports whether t is iter.Seq2[string, V] where V is
 // directly scannable (non-interface).
-// The iter.Seq2[string, any] case is handled separately by isSeq2StringAny.
+// The iter.Seq2[string, any] case is handled separately in buildReflectMapping.
 func seq2StringScannableValueType(t reflect.Type, k reflect.Kind) bool {
 	if k != reflect.Func || t.NumIn() != 1 || t.NumOut() != 0 {
 		return false
@@ -430,7 +412,7 @@ func seq2StringScannableValueType(t reflect.Type, k reflect.Kind) bool {
 	if yield.Kind() != reflect.Func || yield.NumIn() != 2 || yield.NumOut() != 1 {
 		return false
 	}
-	if yield.In(0) != reflectTypeString || yield.Out(0).Kind() != reflect.Bool {
+	if yield.In(0) != reflect.TypeFor[string]() || yield.Out(0).Kind() != reflect.Bool {
 		return false
 	}
 	valType := yield.In(1)
