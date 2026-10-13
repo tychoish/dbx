@@ -55,17 +55,38 @@ type Builder struct {
 	args dt.List[formatter]
 }
 
+func (b *Builder) as(arg any) formatter                { return formatter{arg: arg, builder: &b.qb} }
+func (b *Builder) pseq(args []any) iter.Seq[formatter] { return irt.Convert(irt.Slice(args), b.as) }
+func (b *Builder) pushArgs(args []any) *Builder        { b.args.Extend(b.pseq(args)); return b }
+func (b *Builder) pushStmt(s string) *Builder          { b.sql.WriteString(s); return b }
+
 // SQL exposes a Printf style query builder that wraps 'dbx.Builder'
-func SQL(tpl string, a ...any) (string, []any)           { return new(Builder).With(tpl, a...).Build() }
+func SQL(tpl string, a ...any) (q string, args []any)    { return new(Builder).With(tpl, a...).Build() }
 func (b *Builder) WithSQL(statement ...string) *Builder  { b.sql.Concat(statement...); return b }
 func (b *Builder) WithParams(args ...any) *Builder       { b.args.Extend(b.pseq(args)); return b }
 func (b *Builder) With(tpl string, args ...any) *Builder { return b.pushStmt(tpl).pushArgs(args) }
-func (b *Builder) as(arg any) formatter                  { return formatter{arg: arg, builder: &b.qb} }
-func (b *Builder) pseq(args []any) iter.Seq[formatter]   { return irt.Convert(irt.Slice(args), b.as) }
-func (b *Builder) pushArgs(args []any) *Builder          { b.args.Extend(b.pseq(args)); return b }
-func (b *Builder) pushStmt(s string) *Builder            { b.sql.WriteString(s); return b }
+func (b *Builder) When(cond bool, tpl string, args ...any) *Builder {
+	if cond {
+		return b.pushStmt(tpl).pushArgs(args)
+	}
+	return b
+}
 
-func (b *Builder) Build() (string, []any) {
+func (b *Builder) WhenSQL(cond bool, stmts ...string) *Builder {
+	if cond {
+		b.sql.Concat(stmts...)
+	}
+	return b
+}
+
+func (b *Builder) WhenParams(cond bool, args ...any) *Builder {
+	if cond {
+		return b.pushArgs(args)
+	}
+	return b
+}
+
+func (b *Builder) Build() (query string, args []any) {
 	mut := strut.MakeMutable(b.sql.Len() + 4*b.args.Len())
 	defer mut.Release()
 
@@ -107,18 +128,13 @@ func (f formatter) Format(s fmt.State, verb rune) {
 	}
 }
 
-var (
-	builderSqlitePlaceholder = []byte{'?'}
-	builderConjunction       = []byte{',', ' '}
-)
-
 func (b *queryBuilder) appendOne(w io.Writer, arg any) {
 	b.counter++
 	b.args = append(b.args, arg)
 
 	switch b.placeholder {
 	case '?':
-		_, _ = w.Write(builderSqlitePlaceholder)
+		_, _ = io.WriteString(w, "?")
 	case '$':
 		fmt.Fprintf(w, "$%d", b.counter)
 	case '@':
@@ -136,7 +152,7 @@ func (b *queryBuilder) appendAll(w io.Writer, arg any) {
 	var ct int
 	for val := range seq {
 		if ct > 0 {
-			_, _ = w.Write(builderConjunction)
+			_, _ = io.WriteString(w, ", ")
 		}
 		ct++
 		b.appendOne(w, val)
