@@ -1,5 +1,5 @@
 module github.com/tychoish/dbx
 
-go 1.24
+go 1.26
 
-require github.com/tychoish/fun v0.14.8
+require github.com/tychoish/fun v0.15.0
